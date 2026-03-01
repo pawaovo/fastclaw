@@ -187,7 +187,7 @@ func resetPoolEndpoint(endpoint string, endpoints []string) error {
 		"rm -rf /home/node/.openclaw/workspace/*",
 		"rm -rf /home/node/.openclaw/canvas/*",
 		"rm -rf /home/node/.openclaw/cron/*",
-		"rm -f /home/node/.openclaw/openclaw.json",
+		"if [ -f /home/node/.openclaw/openclaw.json ]; then sed -i -E 's/(\"apiKey\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\\1\\2/g' /home/node/.openclaw/openclaw.json || true; fi",
 		"if [ -f /home/node/.openclaw/.env ]; then sed -i '/^CUSTOM_API_KEY=/d' /home/node/.openclaw/.env || true; fi",
 	}, "; ")
 
