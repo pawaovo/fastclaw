@@ -140,6 +140,16 @@ func ProxyToBot(c echo.Context) error {
 
 	// Get the remaining path after /proxy/{bot_id}
 	remainingPath := c.Param("*")
+	// WebSocket requests should not be redirected; proxy root directly.
+	if isWebSocketRequest(c.Request()) {
+		if remainingPath == "" {
+			remainingPath = "/"
+		} else if !strings.HasPrefix(remainingPath, "/") {
+			remainingPath = "/" + remainingPath
+		}
+		return proxyWebSocket(c, targetHost, remainingPath, bot.ID, accessToken)
+	}
+
 	if remainingPath == "" {
 		// Canonicalize bot root URL with trailing slash so relative assets resolve
 		// under /proxy/{bot_id}/ instead of /proxy/.
@@ -154,11 +164,6 @@ func ProxyToBot(c echo.Context) error {
 		remainingPath = "/"
 	} else if !strings.HasPrefix(remainingPath, "/") {
 		remainingPath = "/" + remainingPath
-	}
-
-	// Check if this is a WebSocket upgrade request
-	if isWebSocketRequest(c.Request()) {
-		return proxyWebSocket(c, targetHost, remainingPath, bot.ID, accessToken)
 	}
 
 	// Regular HTTP proxy
@@ -240,7 +245,9 @@ func ProxyToBot(c echo.Context) error {
 }
 
 func isWebSocketRequest(r *http.Request) bool {
-	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+	upgrade := strings.ToLower(r.Header.Get("Upgrade"))
+	connection := strings.ToLower(r.Header.Get("Connection"))
+	return strings.Contains(upgrade, "websocket") && strings.Contains(connection, "upgrade")
 }
 
 func injectOpenClawBootstrap(body []byte, botPathID, token string) []byte {
