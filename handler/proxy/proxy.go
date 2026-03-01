@@ -179,7 +179,7 @@ func ProxyToBot(c echo.Context) error {
 		originalDirector(req)
 		req.Host = targetHost
 		req.URL.Path = remainingPath
-		req.URL.RawQuery = c.QueryString()
+		req.URL.RawQuery = upstreamRawQuery(c.QueryString())
 
 		// Forward real client IP
 		clientIP := c.RealIP()
@@ -250,6 +250,18 @@ func isWebSocketRequest(r *http.Request) bool {
 	return strings.Contains(upgrade, "websocket") && strings.Contains(connection, "upgrade")
 }
 
+func upstreamRawQuery(rawQuery string) string {
+	if !runtime.IsDockerPoolMode() || rawQuery == "" {
+		return rawQuery
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return rawQuery
+	}
+	values.Del("token")
+	return values.Encode()
+}
+
 func injectOpenClawBootstrap(body []byte, botPathID, token string) []byte {
 	html := string(body)
 	pathLiteral := strconv.Quote("/proxy/" + botPathID)
@@ -303,7 +315,7 @@ func proxyWebSocket(c echo.Context, targetHost, path, botID, accessToken string)
 		Scheme:   "ws",
 		Host:     targetHost,
 		Path:     path,
-		RawQuery: c.QueryString(),
+		RawQuery: upstreamRawQuery(c.QueryString()),
 	}
 
 	requestHeader := buildWSRequestHeaders(c, targetHost)

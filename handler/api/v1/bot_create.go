@@ -110,9 +110,6 @@ func buildAccessURL(slug, token string) string {
 			}
 			url = fmt.Sprintf("http://%s:%d/proxy/%s/", apiDomain, port, slug)
 		}
-		if token != "" {
-			url += "?token=" + token
-		}
 		return url
 	}
 
