@@ -1,0 +1,36 @@
+[server]
+port = 18080
+
+[api]
+admin_token = "change-me-admin-token"
+
+[db]
+host = "postgres"
+port = 5432
+user = "postgres"
+password = "change-me"
+database = "fastclaw"
+sslmode = "disable"
+timezone = "Asia/Shanghai"
+
+[runtime]
+mode = "docker_pool"
+# 0 = unlimited; recommend 2 on 4c8g
+max_running_bots = 2
+
+[docker_pool]
+endpoints = ["openclaw-1:18789", "openclaw-2:18789", "openclaw-3:18789", "openclaw-4:18789"]
+
+[domain]
+# for access_url returned by create bot
+api_domain = "http://154.64.236.139:18080"
+bot_domain_suffix = "fastclaw.ai"
+bot_domain_template = "http://154.64.236.139:18080/proxy/{bot_id}"
+
+[openclaw]
+image = "1panel/openclaw:latest"
+gateway_port = 18789
+cpu_limit = "2000m"
+memory_limit = "4Gi"
+cpu_request = "500m"
+memory_request = "1Gi"
