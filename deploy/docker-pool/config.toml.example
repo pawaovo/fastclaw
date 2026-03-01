@@ -23,6 +23,10 @@ endpoints = ["openclaw-1:18789", "openclaw-2:18789", "openclaw-3:18789", "opencl
 # Optional: shared OpenClaw gateway token for pre-provisioned pool instances.
 # Required when pool OpenClaw uses gateway.auth.mode = "token".
 gateway_token = ""
+# Health guard: periodically checks running bot endpoints and auto-recovers broken leases.
+health_check_interval_seconds = 20
+# Consecutive failed checks before auto recovery is triggered.
+health_fail_threshold = 3
 
 [domain]
 # for access_url returned by create bot

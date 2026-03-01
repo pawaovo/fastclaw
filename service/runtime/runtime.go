@@ -37,6 +37,7 @@ func Init() error {
 		if len(getPoolEndpoints()) == 0 {
 			return errors.New("runtime.mode=docker_pool but docker_pool.endpoints is empty")
 		}
+		startDockerPoolGuard()
 		return nil
 	}
 	return k8s.InitClient()
