@@ -34,6 +34,7 @@ func StartBot(c echo.Context) error {
 
 	// Update bot status
 	if err := model.UpdateBotStatus(bot.ID, model.BotStatusRunning, endpoint); err != nil {
+		_ = runtime.ReleaseBot(bot.ID)
 		return util.InternalError(c, "failed to update bot status")
 	}
 

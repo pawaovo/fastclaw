@@ -342,6 +342,9 @@ func AutoMigrate() error {
 	if err := util.GetDB().AutoMigrate(&Bot{}); err != nil {
 		return err
 	}
+	if err := AutoMigrateRuntimeAllocation(); err != nil {
+		return err
+	}
 	// Migrate existing bots without slug or access_token
 	return migrateExistingBots()
 }

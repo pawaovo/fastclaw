@@ -60,7 +60,7 @@ func StartBot(ctx context.Context, bot *model.Bot, k8sConfig *k8s.BotConfig) (st
 
 func StopBot(ctx context.Context, bot *model.Bot) error {
 	if IsDockerPoolMode() {
-		return nil
+		return model.ReleaseEndpointLease(bot.ID)
 	}
 	if err := k8s.DeleteDeployment(ctx, bot.ID); err != nil {
 		return err
@@ -112,26 +112,14 @@ func allocatePoolEndpoint(botID string) (string, error) {
 	if len(endpoints) == 0 {
 		return "", errors.New("docker pool endpoint is empty")
 	}
+	return model.AcquireEndpointLease(botID, endpoints)
+}
 
-	runningBots, err := model.ListBotsByStatus(model.BotStatusRunning)
-	if err != nil {
-		return "", err
+func ReleaseBot(botID string) error {
+	if !IsDockerPoolMode() {
+		return nil
 	}
-
-	used := make(map[string]struct{}, len(runningBots))
-	for _, b := range runningBots {
-		if b == nil || b.ID == botID || b.Endpoint == "" {
-			continue
-		}
-		used[b.Endpoint] = struct{}{}
-	}
-
-	for _, ep := range endpoints {
-		if _, ok := used[ep]; !ok {
-			return ep, nil
-		}
-	}
-	return "", errors.New("no free docker pool endpoint")
+	return model.ReleaseEndpointLease(botID)
 }
 
 func checkEndpointReady(endpoint string) bool {
