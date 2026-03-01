@@ -57,6 +57,8 @@ func RegisterRoutes(e *echo.Echo) {
 	e.GET("/portal", portalPage)
 	e.GET("/portal/auth/google/login", googleLogin)
 	e.GET("/portal/auth/google/callback", googleCallback)
+	e.POST("/portal/auth/local/register", localRegister)
+	e.POST("/portal/auth/local/login", localLogin)
 	e.POST("/portal/auth/logout", logout)
 
 	api := e.Group("/portal/api")
@@ -85,11 +87,25 @@ func portalPage(c echo.Context) error {
 	if base := portalCanonicalBaseURL(); base != "" {
 		loginURL = strings.TrimRight(base, "/") + "/portal/auth/google/login"
 	}
-	page := strings.Replace(portalHTML, "__GOOGLE_LOGIN_URL__", html.EscapeString(loginURL), 1)
+	page := portalHTML
+	page = strings.Replace(page, "__GOOGLE_LOGIN_URL__", html.EscapeString(loginURL), 1)
+	if isGoogleAuthEnabled() {
+		page = strings.Replace(page, "__GOOGLE_HIDDEN_CLASS__", "", 1)
+	} else {
+		page = strings.Replace(page, "__GOOGLE_HIDDEN_CLASS__", "hidden", 1)
+	}
+	if isLocalAuthEnabled() {
+		page = strings.Replace(page, "__LOCAL_HIDDEN_CLASS__", "", 1)
+	} else {
+		page = strings.Replace(page, "__LOCAL_HIDDEN_CLASS__", "hidden", 1)
+	}
 	return c.HTML(http.StatusOK, page)
 }
 
 func googleLogin(c echo.Context) error {
+	if !isGoogleAuthEnabled() {
+		return c.String(http.StatusBadRequest, "google oauth is disabled")
+	}
 	cfg, err := getGoogleConfig()
 	if err != nil {
 		return c.String(http.StatusBadRequest, err.Error())
@@ -110,6 +126,9 @@ func googleLogin(c echo.Context) error {
 }
 
 func googleCallback(c echo.Context) error {
+	if !isGoogleAuthEnabled() {
+		return c.String(http.StatusBadRequest, "google oauth is disabled")
+	}
 	cfg, err := getGoogleConfig()
 	if err != nil {
 		return c.String(http.StatusBadRequest, err.Error())
@@ -156,6 +175,56 @@ func googleCallback(c echo.Context) error {
 		SameSite: http.SameSiteLaxMode,
 	})
 	return c.Redirect(http.StatusFound, "/portal")
+}
+
+type localAuthRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Name     string `json:"name"`
+}
+
+func localRegister(c echo.Context) error {
+	if !isLocalAuthEnabled() {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "local auth is disabled"})
+	}
+
+	var req localAuthRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "invalid request"})
+	}
+
+	user, err := model.CreateLocalPortalUser(req.Email, req.Name, req.Password)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+	}
+
+	if err := setSessionCookie(c, user); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to create session"})
+	}
+	_, _ = ensureUserBotRunning(user)
+	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+func localLogin(c echo.Context) error {
+	if !isLocalAuthEnabled() {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "local auth is disabled"})
+	}
+
+	var req localAuthRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "invalid request"})
+	}
+
+	user, err := model.AuthenticateLocalPortalUser(req.Email, req.Password)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+	}
+
+	if err := setSessionCookie(c, user); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to create session"})
+	}
+	_, _ = ensureUserBotRunning(user)
+	return c.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
 func logout(c echo.Context) error {
@@ -443,6 +512,19 @@ func buildAccessURL(bot *model.Bot) string {
 	return fmt.Sprintf("https://%s.%s?token=%s", bot.Slug, domain, bot.AccessToken)
 }
 
+func isGoogleAuthEnabled() bool {
+	_, err := getGoogleConfig()
+	return err == nil
+}
+
+func isLocalAuthEnabled() bool {
+	// Default enabled for no-domain deployments unless explicitly disabled.
+	if !viper.IsSet("portal.local_auth_enabled") {
+		return true
+	}
+	return viper.GetBool("portal.local_auth_enabled")
+}
+
 func getGoogleConfig() (*oauth2.Config, error) {
 	clientID := strings.TrimSpace(viper.GetString("portal.google_client_id"))
 	clientSecret := strings.TrimSpace(viper.GetString("portal.google_client_secret"))
@@ -696,9 +778,19 @@ const portalHTML = `<!doctype html>
   <div class="wrap">
     <div class="card">
       <h1>FastClaw Portal</h1>
-      <p class="sub">Google 登录后自动分配你的专属 OpenClaw，并支持一个用户管理多个 Bot。</p>
+      <p class="sub">支持邮箱注册/登录（无域名可用）与 Google 登录（可选）。登录后自动分配专属 OpenClaw，并支持一个用户管理多个 Bot。</p>
       <div id="authArea" class="row hidden">
-        <button class="primary" onclick="window.location='__GOOGLE_LOGIN_URL__'">使用 Google 登录</button>
+        <div class="row __LOCAL_HIDDEN_CLASS__" style="width:100%">
+          <input id="loginEmail" placeholder="邮箱" />
+          <input id="loginPassword" type="password" placeholder="密码（至少8位）" />
+          <input id="registerName" placeholder="昵称（注册可选）" />
+          <button class="primary" onclick="loginLocal()">邮箱登录</button>
+          <button onclick="registerLocal()">邮箱注册</button>
+        </div>
+        <div class="row __GOOGLE_HIDDEN_CLASS__" style="width:100%">
+          <button class="primary" onclick="window.location='__GOOGLE_LOGIN_URL__'">使用 Google 登录</button>
+        </div>
+        <div id="authMsg" class="meta" style="width:100%"></div>
       </div>
       <div id="userArea" class="hidden">
         <div class="row" id="userInfo"></div>
@@ -731,6 +823,13 @@ const portalHTML = `<!doctype html>
         ...options,
       });
       return res.json();
+    }
+
+    function setAuthMessage(msg, isError = false) {
+      const el = document.getElementById('authMsg');
+      if (!el) return;
+      el.textContent = msg || '';
+      el.style.color = isError ? '#dc2626' : '#6b7280';
     }
 
     function render() {
@@ -771,15 +870,53 @@ const portalHTML = `<!doctype html>
     }
 
     async function refresh() {
-      const data = await api('/portal/api/me');
-      if (!data.ok) {
+      try {
+        const data = await api('/portal/api/me');
+        if (!data.ok) {
+          currentUser = null;
+          currentBots = [];
+        } else {
+          currentUser = data.user;
+          currentBots = data.bots || [];
+        }
+      } catch (e) {
         currentUser = null;
         currentBots = [];
-      } else {
-        currentUser = data.user;
-        currentBots = data.bots || [];
       }
       render();
+    }
+
+    async function loginLocal() {
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      setAuthMessage('');
+      const data = await api('/portal/auth/local/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      });
+      if (!data.ok) {
+        setAuthMessage(data.message || '登录失败', true);
+        return;
+      }
+      setAuthMessage('登录成功');
+      await refresh();
+    }
+
+    async function registerLocal() {
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      const name = document.getElementById('registerName').value.trim();
+      setAuthMessage('');
+      const data = await api('/portal/auth/local/register', {
+        method: 'POST',
+        body: JSON.stringify({ email, password, name }),
+      });
+      if (!data.ok) {
+        setAuthMessage(data.message || '注册失败', true);
+        return;
+      }
+      setAuthMessage('注册成功');
+      await refresh();
     }
 
     async function allocateBot() {
