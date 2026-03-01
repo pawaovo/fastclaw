@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -116,7 +118,15 @@ func allocatePoolEndpoint(botID string) (string, error) {
 	if len(endpoints) == 0 {
 		return "", errors.New("docker pool endpoint is empty")
 	}
-	return model.AcquireEndpointLease(botID, endpoints)
+	endpoint, err := model.AcquireEndpointLease(botID, endpoints)
+	if err != nil {
+		return "", err
+	}
+	if err := resetPoolEndpoint(endpoint, endpoints); err != nil {
+		_ = model.ReleaseEndpointLease(botID)
+		return "", err
+	}
+	return endpoint, nil
 }
 
 func ReleaseBot(botID string) error {
@@ -152,4 +162,61 @@ func ensureRunningLimit() error {
 		return errors.New("max running bots limit reached")
 	}
 	return nil
+}
+
+func resetPoolEndpoint(endpoint string, endpoints []string) error {
+	if viper.IsSet("docker_pool.reset_on_allocate") && !viper.GetBool("docker_pool.reset_on_allocate") {
+		return nil
+	}
+
+	containerName, err := resolvePoolContainerName(endpoint, endpoints)
+	if err != nil {
+		return err
+	}
+
+	timeout := viper.GetDuration("docker_pool.reset_timeout")
+	if timeout <= 0 {
+		timeout = 40 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cleanupScript := strings.Join([]string{
+		"set -eu",
+		"rm -rf /home/node/.openclaw/agents/*",
+		"rm -rf /home/node/.openclaw/workspace/*",
+		"rm -rf /home/node/.openclaw/canvas/*",
+		"rm -rf /home/node/.openclaw/cron/*",
+		"rm -f /home/node/.openclaw/openclaw.json",
+		"if [ -f /home/node/.openclaw/.env ]; then sed -i '/^CUSTOM_API_KEY=/d' /home/node/.openclaw/.env || true; fi",
+	}, "; ")
+
+	cleanupOutput, cleanupErr := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-lc", cleanupScript).CombinedOutput()
+	if cleanupErr != nil {
+		return fmt.Errorf("reset docker pool container %s failed: %w; output: %s", containerName, cleanupErr, strings.TrimSpace(string(cleanupOutput)))
+	}
+
+	restartOutput, restartErr := exec.CommandContext(ctx, "docker", "restart", containerName).CombinedOutput()
+	if restartErr != nil {
+		return fmt.Errorf("restart docker pool container %s failed: %w; output: %s", containerName, restartErr, strings.TrimSpace(string(restartOutput)))
+	}
+
+	return nil
+}
+
+func resolvePoolContainerName(endpoint string, endpoints []string) (string, error) {
+	containerNames := viper.GetStringSlice("docker_pool.container_names")
+	for idx, ep := range endpoints {
+		if ep != endpoint {
+			continue
+		}
+		if idx < len(containerNames) {
+			name := strings.TrimSpace(containerNames[idx])
+			if name != "" {
+				return name, nil
+			}
+		}
+		return fmt.Sprintf("openclaw-pool-%02d", idx+1), nil
+	}
+	return "", fmt.Errorf("endpoint %s not found in docker_pool.endpoints", endpoint)
 }
