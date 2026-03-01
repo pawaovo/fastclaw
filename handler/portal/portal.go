@@ -739,12 +739,12 @@ const portalHTML = `<!doctype html>
         div.className = 'bot';
         div.innerHTML =
           '<h3>' + b.name + '</h3>' +
-          '<div class="meta">状态: ' + b.status + ' | Slug: ' + b.slug + '</div>' +
+          '<div class="meta">Status: ' + b.status + ' | Slug: ' + b.slug + '</div>' +
           '<div class="meta">Endpoint: ' + (b.endpoint || '-') + '</div>' +
           '<div class="row">' +
-            '<a href="' + b.access_url + '" target="_blank"><button class="primary">打开</button></a>' +
-            '<button onclick="startBot(\\'' + b.id + '\\')">启动</button>' +
-            '<button onclick="stopBot(\\'' + b.id + '\\')">停止</button>' +
+            '<a href="' + b.access_url + '" target="_blank"><button class="primary">Open</button></a>' +
+            '<button onclick="startBot(\'' + b.id + '\')">Start</button>' +
+            '<button onclick="stopBot(\'' + b.id + '\')">Stop</button>' +
           '</div>' +
           '<div class="meta">' + b.access_url + '</div>';
         botsEl.appendChild(div);
