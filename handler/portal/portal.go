@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -52,18 +53,51 @@ var (
 )
 
 func RegisterRoutes(e *echo.Echo) {
-	e.GET("/portal", portalPage)
-	e.GET("/portal/auth/google/login", googleLogin)
-	e.GET("/portal/auth/google/callback", googleCallback)
-	e.POST("/portal/auth/logout", logout)
+	portal := e.Group("/portal")
+	portal.Use(enforcePortalCanonicalHost)
+	portal.GET("", portalPage)
+	portal.GET("/auth/google/login", googleLogin)
+	portal.GET("/auth/google/callback", googleCallback)
+	portal.POST("/auth/logout", logout)
 
-	api := e.Group("/portal/api")
+	api := portal.Group("/api")
 	api.GET("/me", me)
 	api.GET("/bots", listBots)
 	api.POST("/bots", createBot)
 	api.POST("/bots/:id/start", startBot)
 	api.POST("/bots/:id/stop", stopBot)
 	api.POST("/allocate", allocateBot)
+}
+
+func enforcePortalCanonicalHost(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		canonical := portalCanonicalBaseURL()
+		if canonical == "" {
+			return next(c)
+		}
+		u, err := url.Parse(canonical)
+		if err != nil || u.Host == "" {
+			return next(c)
+		}
+		reqHost := c.Request().Host
+		if strings.EqualFold(reqHost, u.Host) {
+			return next(c)
+		}
+		target := strings.TrimRight(canonical, "/") + c.Request().URL.RequestURI()
+		return c.Redirect(http.StatusFound, target)
+	}
+}
+
+func portalCanonicalBaseURL() string {
+	redirectURL := strings.TrimSpace(viper.GetString("portal.google_redirect_url"))
+	if redirectURL == "" {
+		return ""
+	}
+	u, err := url.Parse(redirectURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 func portalPage(c echo.Context) error {
