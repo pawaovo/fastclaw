@@ -103,12 +103,12 @@ func buildAccessURL(slug, token string) string {
 
 		var url string
 		if strings.HasPrefix(apiDomain, "http://") || strings.HasPrefix(apiDomain, "https://") {
-			url = strings.TrimRight(apiDomain, "/") + "/proxy/" + slug
+			url = strings.TrimRight(apiDomain, "/") + "/proxy/" + slug + "/"
 		} else {
 			if apiDomain == "" {
 				apiDomain = "127.0.0.1"
 			}
-			url = fmt.Sprintf("http://%s:%d/proxy/%s", apiDomain, port, slug)
+			url = fmt.Sprintf("http://%s:%d/proxy/%s/", apiDomain, port, slug)
 		}
 		if token != "" {
 			url += "?token=" + token

@@ -415,7 +415,7 @@ func buildAccessURL(bot *model.Bot) string {
 			base = fmt.Sprintf("http://127.0.0.1:%d", port)
 		}
 		base = strings.TrimRight(base, "/")
-		return fmt.Sprintf("%s/proxy/%s?token=%s", base, bot.Slug, bot.AccessToken)
+		return fmt.Sprintf("%s/proxy/%s/?token=%s", base, bot.Slug, bot.AccessToken)
 	}
 	domain := strings.TrimSpace(viper.GetString("domain.bot_domain_suffix"))
 	if domain == "" {

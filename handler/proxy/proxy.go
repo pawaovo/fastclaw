@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -139,6 +140,16 @@ func ProxyToBot(c echo.Context) error {
 	// Get the remaining path after /proxy/{bot_id}
 	remainingPath := c.Param("*")
 	if remainingPath == "" {
+		// Canonicalize bot root URL with trailing slash so relative assets resolve
+		// under /proxy/{bot_id}/ instead of /proxy/.
+		reqPath := c.Request().URL.Path
+		if !strings.HasSuffix(reqPath, "/") {
+			redirectURL := reqPath + "/"
+			if rawQuery := c.QueryString(); rawQuery != "" {
+				redirectURL += "?" + rawQuery
+			}
+			return c.Redirect(http.StatusMovedPermanently, redirectURL)
+		}
 		remainingPath = "/"
 	} else if !strings.HasPrefix(remainingPath, "/") {
 		remainingPath = "/" + remainingPath
@@ -174,31 +185,45 @@ func ProxyToBot(c echo.Context) error {
 		}
 	}
 
-	// Auto-approve NOT_PAIRED HTTP responses so subsequent client retries succeed
-	if accessToken != "" && !runtime.IsDockerPoolMode() {
-		botID := bot.ID
-		token := accessToken
-		proxy.ModifyResponse = func(resp *http.Response) error {
-			if resp.StatusCode < 400 {
-				return nil
-			}
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return nil
-			}
-			resp.Body = io.NopCloser(bytes.NewReader(body))
+	// Response hook:
+	// 1) Inject OpenClaw client bootstrap into HTML so ws gateway uses /proxy/{bot_id}/.
+	// 2) Auto-approve NOT_PAIRED errors for non-docker-pool mode.
+	botID := bot.ID
+	botPathID := botIdentifier
+	token := accessToken
+	requestToken := c.QueryParam("token")
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+		needHTMLInject := strings.Contains(contentType, "text/html")
+		needPairCheck := token != "" && !runtime.IsDockerPoolMode() && resp.StatusCode >= 400
 
-			if isNotPairedResponse(body) {
-				fmt.Printf("[Proxy] NOT_PAIRED detected in HTTP response for bot %s, auto-approving...\n", botID)
-				go func() {
-					ctx := context.Background()
-					if err := k8s.AutoApproveAllPending(ctx, botID, token); err != nil {
-						fmt.Printf("[Proxy] Auto-approve (HTTP) failed for bot %s: %v\n", botID, err)
-					}
-				}()
-			}
+		if !needHTMLInject && !needPairCheck {
 			return nil
 		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil
+		}
+
+		if needHTMLInject {
+			body = injectOpenClawBootstrap(body, botPathID, requestToken)
+		}
+
+		if needPairCheck && isNotPairedResponse(body) {
+			fmt.Printf("[Proxy] NOT_PAIRED detected in HTTP response for bot %s, auto-approving...\n", botID)
+			go func() {
+				ctx := context.Background()
+				if err := k8s.AutoApproveAllPending(ctx, botID, token); err != nil {
+					fmt.Printf("[Proxy] Auto-approve (HTTP) failed for bot %s: %v\n", botID, err)
+				}
+			}()
+		}
+
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return nil
 	}
 
 	proxy.ServeHTTP(c.Response(), c.Request())
@@ -207,6 +232,18 @@ func ProxyToBot(c echo.Context) error {
 
 func isWebSocketRequest(r *http.Request) bool {
 	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+}
+
+func injectOpenClawBootstrap(body []byte, botPathID, token string) []byte {
+	html := string(body)
+	pathLiteral := strconv.Quote("/proxy/" + botPathID + "/")
+	tokenLiteral := strconv.Quote(token)
+	script := fmt.Sprintf(`<script>(function(){try{var key="openclaw.control.settings.v1";var current={};var raw=window.localStorage.getItem(key);if(raw){current=JSON.parse(raw)||{};}var proto=window.location.protocol==="https:"?"wss":"ws";current.gatewayUrl=proto+"://"+window.location.host+%s;if(%s!==""){current.token=%s;}window.localStorage.setItem(key,JSON.stringify(current));}catch(_e){}})();</script>`, pathLiteral, tokenLiteral, tokenLiteral)
+
+	if strings.Contains(strings.ToLower(html), "</head>") {
+		return []byte(strings.Replace(html, "</head>", script+"</head>", 1))
+	}
+	return append([]byte(script), body...)
 }
 
 // buildWSRequestHeaders builds the headers for the backend WebSocket connection
