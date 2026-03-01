@@ -21,6 +21,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
+	"github.com/spf13/viper"
 	"gorm.io/gorm"
 )
 
@@ -186,12 +187,20 @@ func ProxyToBot(c echo.Context) error {
 	}
 
 	// Response hook:
-	// 1) Inject OpenClaw client bootstrap into HTML so ws gateway uses /proxy/{bot_id}/.
+	// 1) Inject OpenClaw client bootstrap into HTML so ws gateway uses /proxy/{bot_id}.
 	// 2) Auto-approve NOT_PAIRED errors for non-docker-pool mode.
 	botID := bot.ID
 	botPathID := botIdentifier
 	token := accessToken
 	requestToken := c.QueryParam("token")
+	injectedGatewayToken := requestToken
+	if runtime.IsDockerPoolMode() {
+		// docker_pool OpenClaw instances may have gateway auth token enabled.
+		// Use configured pool gateway token instead of bot access token.
+		if t := strings.TrimSpace(viper.GetString("docker_pool.gateway_token")); t != "" {
+			injectedGatewayToken = t
+		}
+	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 		needHTMLInject := strings.Contains(contentType, "text/html")
@@ -207,7 +216,7 @@ func ProxyToBot(c echo.Context) error {
 		}
 
 		if needHTMLInject {
-			body = injectOpenClawBootstrap(body, botPathID, requestToken)
+			body = injectOpenClawBootstrap(body, botPathID, injectedGatewayToken)
 		}
 
 		if needPairCheck && isNotPairedResponse(body) {
@@ -236,7 +245,7 @@ func isWebSocketRequest(r *http.Request) bool {
 
 func injectOpenClawBootstrap(body []byte, botPathID, token string) []byte {
 	html := string(body)
-	pathLiteral := strconv.Quote("/proxy/" + botPathID + "/")
+	pathLiteral := strconv.Quote("/proxy/" + botPathID)
 	tokenLiteral := strconv.Quote(token)
 	script := fmt.Sprintf(`<script>(function(){try{var key="openclaw.control.settings.v1";var current={};var raw=window.localStorage.getItem(key);if(raw){current=JSON.parse(raw)||{};}var proto=window.location.protocol==="https:"?"wss":"ws";current.gatewayUrl=proto+"://"+window.location.host+%s;if(%s!==""){current.token=%s;}window.localStorage.setItem(key,JSON.stringify(current));}catch(_e){}})();</script>`, pathLiteral, tokenLiteral, tokenLiteral)
 
