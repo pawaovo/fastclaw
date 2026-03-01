@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,39 +54,18 @@ var (
 )
 
 func RegisterRoutes(e *echo.Echo) {
-	portal := e.Group("/portal")
-	portal.Use(enforcePortalCanonicalHost)
-	portal.GET("", portalPage)
-	portal.GET("/auth/google/login", googleLogin)
-	portal.GET("/auth/google/callback", googleCallback)
-	portal.POST("/auth/logout", logout)
+	e.GET("/portal", portalPage)
+	e.GET("/portal/auth/google/login", googleLogin)
+	e.GET("/portal/auth/google/callback", googleCallback)
+	e.POST("/portal/auth/logout", logout)
 
-	api := portal.Group("/api")
+	api := e.Group("/portal/api")
 	api.GET("/me", me)
 	api.GET("/bots", listBots)
 	api.POST("/bots", createBot)
 	api.POST("/bots/:id/start", startBot)
 	api.POST("/bots/:id/stop", stopBot)
 	api.POST("/allocate", allocateBot)
-}
-
-func enforcePortalCanonicalHost(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		canonical := portalCanonicalBaseURL()
-		if canonical == "" {
-			return next(c)
-		}
-		u, err := url.Parse(canonical)
-		if err != nil || u.Host == "" {
-			return next(c)
-		}
-		reqHost := c.Request().Host
-		if strings.EqualFold(reqHost, u.Host) {
-			return next(c)
-		}
-		target := strings.TrimRight(canonical, "/") + c.Request().URL.RequestURI()
-		return c.Redirect(http.StatusFound, target)
-	}
 }
 
 func portalCanonicalBaseURL() string {
@@ -101,7 +81,12 @@ func portalCanonicalBaseURL() string {
 }
 
 func portalPage(c echo.Context) error {
-	return c.HTML(http.StatusOK, portalHTML)
+	loginURL := "/portal/auth/google/login"
+	if base := portalCanonicalBaseURL(); base != "" {
+		loginURL = strings.TrimRight(base, "/") + "/portal/auth/google/login"
+	}
+	page := strings.Replace(portalHTML, "window.location='/portal/auth/google/login'", "window.location="+strconv.Quote(loginURL), 1)
+	return c.HTML(http.StatusOK, page)
 }
 
 func googleLogin(c echo.Context) error {
