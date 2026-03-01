@@ -209,9 +209,10 @@ func ProxyToBot(c echo.Context) error {
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 		needHTMLInject := strings.Contains(contentType, "text/html")
+		needControlUIConfigPatch := strings.Contains(resp.Request.URL.Path, "/__openclaw/control-ui-config.json")
 		needPairCheck := token != "" && !runtime.IsDockerPoolMode() && resp.StatusCode >= 400
 
-		if !needHTMLInject && !needPairCheck {
+		if !needHTMLInject && !needControlUIConfigPatch && !needPairCheck {
 			return nil
 		}
 
@@ -222,6 +223,10 @@ func ProxyToBot(c echo.Context) error {
 
 		if needHTMLInject {
 			body = injectOpenClawBootstrap(body, botPathID, injectedGatewayToken)
+		}
+		if needControlUIConfigPatch {
+			body = patchControlUIConfig(body, c.Scheme(), c.Request().Host, botPathID, injectedGatewayToken)
+			resp.Header.Set("Content-Type", "application/json; charset=utf-8")
 		}
 
 		if needPairCheck && isNotPairedResponse(body) {
@@ -272,6 +277,26 @@ func injectOpenClawBootstrap(body []byte, botPathID, token string) []byte {
 		return []byte(strings.Replace(html, "</head>", script+"</head>", 1))
 	}
 	return append([]byte(script), body...)
+}
+
+func patchControlUIConfig(body []byte, scheme, host, botPathID, token string) []byte {
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return body
+	}
+
+	proxyBasePath := "/proxy/" + botPathID
+	cfg["basePath"] = proxyBasePath
+	cfg["gatewayUrl"] = fmt.Sprintf("%s://%s%s", scheme, host, proxyBasePath)
+	if strings.TrimSpace(token) != "" {
+		cfg["token"] = token
+	}
+
+	patched, err := json.Marshal(cfg)
+	if err != nil {
+		return body
+	}
+	return patched
 }
 
 // buildWSRequestHeaders builds the headers for the backend WebSocket connection
