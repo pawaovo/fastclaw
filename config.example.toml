@@ -44,3 +44,14 @@ cpu_limit = "2000m"
 memory_limit = "4Gi"
 cpu_request = "500m"
 memory_request = "1Gi"
+
+[portal]
+# Existing app for portal users. Empty means auto-create by app_name.
+app_id = ""
+app_name = "FastClaw Portal"
+# Session signing secret for portal cookies.
+session_secret = "change-this-portal-session-secret"
+# Google OAuth settings.
+google_client_id = ""
+google_client_secret = ""
+google_redirect_url = "http://127.0.0.1:18080/portal/auth/google/callback"

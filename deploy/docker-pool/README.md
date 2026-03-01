@@ -13,6 +13,10 @@ Edit `config.toml`:
 - `api.admin_token`
 - `db.password`
 - `domain.api_domain` and `domain.bot_domain_template` to your actual public URL
+- `portal.session_secret`
+- `portal.google_client_id`
+- `portal.google_client_secret`
+- `portal.google_redirect_url` (must match Google Console exactly)
 
 ## 2) Start services
 
@@ -69,3 +73,4 @@ curl -s "$BASE/bot/api/v1/bots/$BOT_ID/status" \
 - `max_running_bots = 2` is recommended for 4C8G to avoid OOM/CPU exhaustion.
 - `docker_pool.endpoints` defines your pre-provisioned OpenClaw gateway instances.
 - In `docker_pool` mode, K8s-only APIs are intentionally blocked.
+- End-user portal is available at `/portal` after setting Google OAuth config.

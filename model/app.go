@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"time"
 
 	"github.com/fastclaw-ai/fastclaw/util"
@@ -56,6 +57,14 @@ func CreateApp(app *App) error {
 func GetAppByID(id string) (*App, error) {
 	var app App
 	if err := util.GetDB().Where("id = ?", id).First(&app).Error; err != nil {
+		return nil, err
+	}
+	return &app, nil
+}
+
+func GetAppByName(name string) (*App, error) {
+	var app App
+	if err := util.GetDB().Where("LOWER(name) = ?", strings.ToLower(strings.TrimSpace(name))).First(&app).Error; err != nil {
 		return nil, err
 	}
 	return &app, nil

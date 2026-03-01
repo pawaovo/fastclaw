@@ -339,6 +339,9 @@ func AutoMigrate() error {
 	if err := AutoMigrateApp(); err != nil {
 		return err
 	}
+	if err := AutoMigratePortalUser(); err != nil {
+		return err
+	}
 	if err := util.GetDB().AutoMigrate(&Bot{}); err != nil {
 		return err
 	}

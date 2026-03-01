@@ -34,3 +34,11 @@ cpu_limit = "2000m"
 memory_limit = "4Gi"
 cpu_request = "500m"
 memory_request = "1Gi"
+
+[portal]
+app_id = ""
+app_name = "FastClaw Portal"
+session_secret = "change-this-portal-session-secret"
+google_client_id = ""
+google_client_secret = ""
+google_redirect_url = "http://154.64.236.139:18080/portal/auth/google/callback"

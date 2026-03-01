@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	v1 "github.com/fastclaw-ai/fastclaw/handler/api/v1"
+	"github.com/fastclaw-ai/fastclaw/handler/portal"
 	"github.com/fastclaw-ai/fastclaw/handler/proxy"
 	authmw "github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/service/runtime"
@@ -160,6 +161,9 @@ func startServer() {
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(200, map[string]string{"status": "ok"})
 	})
+
+	// Portal routes (Google login + end-user bot management)
+	portal.RegisterRoutes(e)
 
 	// Bot proxy routes (for {bot_id}.fastclaw.ai/*)
 	e.Any("/proxy/:bot_id", proxy.ProxyToBot)
