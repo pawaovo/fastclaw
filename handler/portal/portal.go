@@ -10,10 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,7 +85,7 @@ func portalPage(c echo.Context) error {
 	if base := portalCanonicalBaseURL(); base != "" {
 		loginURL = strings.TrimRight(base, "/") + "/portal/auth/google/login"
 	}
-	page := strings.Replace(portalHTML, "window.location='/portal/auth/google/login'", "window.location="+strconv.Quote(loginURL), 1)
+	page := strings.Replace(portalHTML, "__GOOGLE_LOGIN_URL__", html.EscapeString(loginURL), 1)
 	return c.HTML(http.StatusOK, page)
 }
 
@@ -698,7 +698,7 @@ const portalHTML = `<!doctype html>
       <h1>FastClaw Portal</h1>
       <p class="sub">Google 登录后自动分配你的专属 OpenClaw，并支持一个用户管理多个 Bot。</p>
       <div id="authArea" class="row hidden">
-        <button class="primary" onclick="window.location='/portal/auth/google/login'">使用 Google 登录</button>
+        <button class="primary" onclick="window.location='__GOOGLE_LOGIN_URL__'">使用 Google 登录</button>
       </div>
       <div id="userArea" class="hidden">
         <div class="row" id="userInfo"></div>
