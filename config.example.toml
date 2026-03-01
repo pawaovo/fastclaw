@@ -20,6 +20,8 @@ namespace = "fastclaw"
 [runtime]
 # k8s | docker_pool
 mode = "k8s"
+# 0 means unlimited
+max_running_bots = 2
 
 [docker_pool]
 # Only used when runtime.mode = "docker_pool"

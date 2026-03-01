@@ -82,6 +82,10 @@ func formatAge(ms int64) string {
 //   - status: filter by status ("pending" or "paired"), default returns all
 //   - client_mode: filter by client mode ("web", "cli", "desktop", etc.), default returns all
 func ListDevices(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")
@@ -274,6 +278,10 @@ func listDevicesViaCLI(ctx context.Context, bot *model.Bot) ([]DeviceInfo, error
 
 // ApproveDevice approves a pending device pairing request
 func ApproveDevice(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")
@@ -317,6 +325,10 @@ func ApproveDevice(c echo.Context) error {
 // Query params:
 //   - role: the role to revoke (default: "user")
 func RevokeDevice(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")

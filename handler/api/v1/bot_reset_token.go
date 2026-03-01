@@ -6,6 +6,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 )
@@ -50,7 +51,7 @@ func ResetBotToken(c echo.Context) error {
 	}
 
 	// If bot is running, update deployment with new token
-	if bot.Status == model.BotStatusRunning {
+	if bot.Status == model.BotStatusRunning && !runtime.IsDockerPoolMode() {
 		ctx := context.Background()
 		k8sConfig := convertToK8sConfig(updatedBot, openclawConfig)
 

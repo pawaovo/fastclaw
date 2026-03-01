@@ -37,6 +37,10 @@ type AddChannelRequest struct {
 // AddChannel adds an IM channel to a bot
 // POST /bots/:id/channels
 func AddChannel(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")
@@ -121,6 +125,10 @@ func AddChannel(c echo.Context) error {
 // ListChannels lists all channels for a bot
 // GET /bots/:id/channels
 func ListChannels(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")
@@ -143,6 +151,10 @@ func ListChannels(c echo.Context) error {
 // DELETE /bots/:id/channels/:channel?account=xxx
 // If account query param is provided, removes only that account; otherwise removes entire channel
 func RemoveChannel(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")
@@ -189,6 +201,10 @@ type ChannelPairingRevokeRequest struct {
 // ApproveChannelPairing approves a channel pairing request
 // POST /bots/:id/channels/:channel/pairing/approve
 func ApproveChannelPairing(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")
@@ -229,6 +245,10 @@ func ApproveChannelPairing(c echo.Context) error {
 // RevokeChannelPairing revokes a channel pairing for a user
 // POST /bots/:id/channels/:channel/pairing/revoke
 func RevokeChannelPairing(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")
@@ -269,6 +289,10 @@ func RevokeChannelPairing(c echo.Context) error {
 // GetChannelPairedUsers lists all paired users for a channel
 // GET /bots/:id/channels/:channel/pairing/users
 func GetChannelPairedUsers(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")
@@ -298,6 +322,10 @@ func GetChannelPairedUsers(c echo.Context) error {
 // ListChannelPairingRequests lists pending pairing requests for a channel
 // GET /bots/:id/channels/:channel/pairing
 func ListChannelPairingRequests(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")

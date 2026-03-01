@@ -6,6 +6,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 	"github.com/spf13/viper"
@@ -15,9 +16,9 @@ import (
 type GetBotResponse struct {
 	*model.Bot
 	DeploymentStatus *k8s.DeploymentStatusInfo `json:"deployment_status,omitempty"`
-	Image            string                     `json:"image,omitempty"`
-	LatestImage      string                     `json:"latest_image,omitempty"`
-	ImageUpToDate    *bool                      `json:"image_up_to_date,omitempty"`
+	Image            string                    `json:"image,omitempty"`
+	LatestImage      string                    `json:"latest_image,omitempty"`
+	ImageUpToDate    *bool                     `json:"image_up_to_date,omitempty"`
 }
 
 func GetBot(c echo.Context) error {
@@ -30,7 +31,7 @@ func GetBot(c echo.Context) error {
 	response := &GetBotResponse{Bot: bot}
 
 	// If bot is running, get deployment status, image info, and sync config
-	if bot.Status == model.BotStatusRunning {
+	if bot.Status == model.BotStatusRunning && !runtime.IsDockerPoolMode() {
 		// Get deployment status
 		if statusInfo, err := k8s.GetDeploymentStatusInfo(ctx, bot.ID); err == nil {
 			response.DeploymentStatus = statusInfo

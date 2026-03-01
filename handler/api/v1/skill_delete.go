@@ -12,6 +12,10 @@ import (
 )
 
 func DeleteSkill(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	bot := middleware.GetBotFromContext(c)
 	if bot == nil {
 		return util.Forbidden(c, "not authorized")

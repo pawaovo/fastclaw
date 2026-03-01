@@ -44,6 +44,9 @@ func Init() error {
 
 func StartBot(ctx context.Context, bot *model.Bot, k8sConfig *k8s.BotConfig) (string, error) {
 	if IsDockerPoolMode() {
+		if err := ensureRunningLimit(); err != nil {
+			return "", err
+		}
 		return allocatePoolEndpoint(bot.ID)
 	}
 
@@ -133,4 +136,19 @@ func checkEndpointReady(endpoint string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+func ensureRunningLimit() error {
+	maxRunning := viper.GetInt("runtime.max_running_bots")
+	if maxRunning <= 0 {
+		return nil
+	}
+	bots, err := model.ListBotsByStatus(model.BotStatusRunning)
+	if err != nil {
+		return err
+	}
+	if len(bots) >= maxRunning {
+		return errors.New("max running bots limit reached")
+	}
+	return nil
 }
