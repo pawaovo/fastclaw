@@ -16,6 +16,7 @@ import (
 
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
@@ -116,22 +117,23 @@ func ProxyToBot(c echo.Context) error {
 	// Start a poller to approve devices that become pending in the next ~16s
 	// (from WebUI JS requests that follow the initial page load).
 	accessToken := ""
-	if token := c.QueryParam("token"); token != "" && token == bot.AccessToken {
-		accessToken = bot.AccessToken
-		go autoApprovePoller(bot.ID, accessToken)
+	if !runtime.IsDockerPoolMode() {
+		if token := c.QueryParam("token"); token != "" && token == bot.AccessToken {
+			accessToken = bot.AccessToken
+			go autoApprovePoller(bot.ID, accessToken)
+		}
 	}
 
 	if bot.Status != model.BotStatusRunning {
 		return util.BadRequest(c, "bot is not running")
 	}
 
-	// Get target URL from K8s service (uses ClusterIP in local dev mode, DNS in production)
-	targetHost, err := k8s.GetServiceEndpoint(context.Background(), bot.ID)
+	targetHost, err := runtime.GetBotEndpoint(context.Background(), bot)
 	if err != nil {
-		return util.InternalError(c, "failed to get service endpoint")
+		return util.InternalError(c, "failed to get bot endpoint")
 	}
 	if targetHost == "" {
-		return util.NotFound(c, "bot service not found")
+		return util.NotFound(c, "bot endpoint not found")
 	}
 
 	// Get the remaining path after /proxy/{bot_id}
@@ -173,7 +175,7 @@ func ProxyToBot(c echo.Context) error {
 	}
 
 	// Auto-approve NOT_PAIRED HTTP responses so subsequent client retries succeed
-	if accessToken != "" {
+	if accessToken != "" && !runtime.IsDockerPoolMode() {
 		botID := bot.ID
 		token := accessToken
 		proxy.ModifyResponse = func(resp *http.Response) error {
@@ -257,7 +259,7 @@ func proxyWebSocket(c echo.Context, targetHost, path, botID, accessToken string)
 	backendConn, resp, err := websocket.DefaultDialer.Dial(backendURL.String(), requestHeader)
 
 	// Handle NOT_PAIRED during WebSocket handshake (upgrade rejected with HTTP error)
-	if err != nil && accessToken != "" && resp != nil && resp.Body != nil {
+	if err != nil && accessToken != "" && !runtime.IsDockerPoolMode() && resp != nil && resp.Body != nil {
 		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr == nil && isNotPairedResponse(body) {
@@ -315,7 +317,7 @@ func proxyWebSocket(c echo.Context, targetHost, path, botID, accessToken string)
 
 			// Check first message for NOT_PAIRED (handles the case where
 			// WebSocket upgrade succeeds but pairing is checked at message level)
-			if firstMessage && accessToken != "" {
+			if firstMessage && accessToken != "" && !runtime.IsDockerPoolMode() {
 				firstMessage = false
 				if isNotPairedResponse(msg) {
 					fmt.Printf("[Proxy] NOT_PAIRED detected in WS message for bot %s, auto-approving...\n", botID)

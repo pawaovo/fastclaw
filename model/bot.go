@@ -327,10 +327,8 @@ func DeleteBot(id string) error {
 func UpdateBotStatus(id string, status BotStatus, endpoint string) error {
 	updates := map[string]interface{}{
 		"status":     status,
+		"endpoint":   endpoint,
 		"updated_at": time.Now(),
-	}
-	if endpoint != "" {
-		updates["endpoint"] = endpoint
 	}
 	return util.GetDB().Model(&Bot{}).Where("id = ?", id).Updates(updates).Error
 }

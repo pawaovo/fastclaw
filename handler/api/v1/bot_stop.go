@@ -5,7 +5,7 @@ import (
 
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
-	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 )
@@ -22,14 +22,8 @@ func StopBot(c echo.Context) error {
 
 	ctx := context.Background()
 
-	// Delete K8s deployment (this keeps the PVC data)
-	if err := k8s.DeleteDeployment(ctx, bot.ID); err != nil {
-		return util.InternalError(c, "failed to delete deployment: "+err.Error())
-	}
-
-	// Delete K8s service
-	if err := k8s.DeleteService(ctx, bot.ID); err != nil {
-		return util.InternalError(c, "failed to delete service: "+err.Error())
+	if err := runtime.StopBot(ctx, bot); err != nil {
+		return util.InternalError(c, "failed to stop bot: "+err.Error())
 	}
 
 	// Update bot status

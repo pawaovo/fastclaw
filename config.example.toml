@@ -17,6 +17,15 @@ timezone = "Asia/Shanghai"
 kubeconfig = ""  # Empty for in-cluster config
 namespace = "fastclaw"
 
+[runtime]
+# k8s | docker_pool
+mode = "k8s"
+
+[docker_pool]
+# Only used when runtime.mode = "docker_pool"
+# For single-server deployment, point to pre-started OpenClaw gateways.
+endpoints = ["127.0.0.1:18891", "127.0.0.1:18892", "127.0.0.1:18893", "127.0.0.1:18894"]
+
 [storage]
 pvc_name = "fastclaw-shared-data"
 base_path = "/fastclaw-data"

@@ -9,7 +9,7 @@ import (
 	v1 "github.com/fastclaw-ai/fastclaw/handler/api/v1"
 	"github.com/fastclaw-ai/fastclaw/handler/proxy"
 	authmw "github.com/fastclaw-ai/fastclaw/middleware"
-	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/spf13/cobra"
@@ -24,8 +24,8 @@ var serverCmd = &cobra.Command{
 			log.Fatalf("init config failed: %v", err)
 		}
 
-		if err := k8s.InitClient(); err != nil {
-			log.Fatalf("init k8s client failed: %v", err)
+		if err := runtime.Init(); err != nil {
+			log.Fatalf("init runtime failed: %v", err)
 		}
 
 		startServer()
