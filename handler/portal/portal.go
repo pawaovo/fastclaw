@@ -128,6 +128,7 @@ func RegisterRoutes(e *echo.Echo) {
 	api.POST("/bots", createBot)
 	api.POST("/bots/:id/start", startBot)
 	api.POST("/bots/:id/stop", stopBot)
+	api.DELETE("/bots/:id", deleteBot)
 	api.GET("/bots/:id/health", getBotHealth)
 	api.GET("/bots/:id/ai-config", getBotAIConfig)
 	api.PUT("/bots/:id/ai-config", updateBotAIConfig)
@@ -417,6 +418,29 @@ func stopBot(c echo.Context) error {
 		bot.Endpoint = ""
 	}
 	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bot": toPortalBot(bot)})
+}
+
+func deleteBot(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+
+	if bot.Status == model.BotStatusRunning {
+		if err := runtime.StopBot(context.Background(), bot); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to stop bot"})
+		}
+	}
+	_ = runtime.ReleaseBot(bot.ID)
+	if err := model.DeleteBot(bot.ID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to delete bot"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
 func getBotHealth(c echo.Context) error {
@@ -1706,7 +1730,8 @@ const portalHTML = `<!doctype html>
       <div id="userArea" class="hidden">
         <div class="row" id="userInfo"></div>
         <div class="row">
-          <button class="primary" onclick="allocateBot()">自动分配并启动专属 Bot</button>
+          <button class="primary" onclick="createBot()">新增专属实例</button>
+          <button onclick="allocateBot()">自动分配并启动专属 Bot</button>
           <button onclick="refresh()">刷新</button>
           <button class="danger" onclick="logout()">退出登录</button>
         </div>
@@ -1773,6 +1798,7 @@ const portalHTML = `<!doctype html>
             '<a href="' + b.access_url + '" target="_blank"><button class="primary">Open</button></a>' +
             '<button onclick="startBot(\'' + b.id + '\')">Start</button>' +
             '<button onclick="stopBot(\'' + b.id + '\')">Stop</button>' +
+            '<button class="danger" onclick="deleteBot(\'' + b.id + '\')">Delete</button>' +
             '<button onclick="checkBotHealth(\'' + safeId + '\', \'' + b.id + '\')">Health</button>' +
             '<button onclick="toggleAIConfig(\'' + safeId + '\', \'' + b.id + '\')">AI Config</button>' +
             '<button onclick="toggleChannelsConfig(\'' + safeId + '\', \'' + b.id + '\')">Channels</button>' +
@@ -1914,9 +1940,11 @@ const portalHTML = `<!doctype html>
     }
 
     async function createBot() {
-      const name = document.getElementById('botName').value.trim();
-      await api('/portal/api/bots', { method: 'POST', body: JSON.stringify({ name }) });
-      document.getElementById('botName').value = '';
+      const data = await api('/portal/api/bots', { method: 'POST', body: JSON.stringify({}) });
+      if (!data.ok) {
+        alert(data.message || 'Create failed');
+        return;
+      }
       await refresh();
     }
 
@@ -1927,6 +1955,18 @@ const portalHTML = `<!doctype html>
 
     async function stopBot(id) {
       await api('/portal/api/bots/' + id + '/stop', { method: 'POST' });
+      await refresh();
+    }
+
+    async function deleteBot(id) {
+      if (!confirm('确认删除该 OpenClaw 实例？删除后可重新新增，配额上限仍为 1。')) {
+        return;
+      }
+      const data = await api('/portal/api/bots/' + id, { method: 'DELETE' });
+      if (!data.ok) {
+        alert(data.message || 'Delete failed');
+        return;
+      }
       await refresh();
     }
 
