@@ -1883,11 +1883,15 @@ const portalHTML = `<!doctype html>
       } else {
         poolInfo.textContent = '';
       }
+      const hasBot = Array.isArray(currentBots) && currentBots.length > 0;
       const poolFull = !!(currentPool && currentPool.full);
       if (createBotBtn) {
-        createBotBtn.disabled = poolFull && (!Array.isArray(currentBots) || currentBots.length === 0);
+        createBotBtn.disabled = hasBot || (poolFull && !hasBot);
       }
-      if (poolFull && (!Array.isArray(currentBots) || currentBots.length === 0)) {
+      if (hasBot) {
+        userHint.textContent = '每个用户仅允许 1 个专属实例；如需新建，请先删除当前实例。';
+        userHint.style.color = '#444';
+      } else if (poolFull) {
         userHint.textContent = '当前资源池已满，暂时无法为新用户分配实例，请稍后重试。';
         userHint.style.color = '#8f1d1d';
       } else {
@@ -2048,6 +2052,10 @@ const portalHTML = `<!doctype html>
     }
 
     async function createBot() {
+      if (Array.isArray(currentBots) && currentBots.length > 0) {
+        alert('每个用户仅允许 1 个专属实例；请先删除当前实例后再新建。');
+        return;
+      }
       const data = await api('/portal/api/bots', { method: 'POST', body: JSON.stringify({}) });
       if (!data.ok) {
         if (data.pool) currentPool = data.pool;
