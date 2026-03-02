@@ -8,6 +8,7 @@ If you want to run FastClaw without Kubernetes (for example on a 4C8G VPS), use 
 
 - [`deploy/docker-pool/README.md`](deploy/docker-pool/README.md)
 - [`docs/DEPLOY_DOCKER_POOL_ZH.md`](docs/DEPLOY_DOCKER_POOL_ZH.md) (Chinese, end-to-end guide)
+- [`docs/RELEASE_DOCKER_POOL_ZH.md`](docs/RELEASE_DOCKER_POOL_ZH.md) (Chinese, release notes and acceptance checklist)
 
 Recommended command:
 

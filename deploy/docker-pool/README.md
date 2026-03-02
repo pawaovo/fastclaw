@@ -19,6 +19,7 @@ After it finishes:
 Chinese full guide:
 
 - [`docs/DEPLOY_DOCKER_POOL_ZH.md`](../../docs/DEPLOY_DOCKER_POOL_ZH.md)
+- [`docs/RELEASE_DOCKER_POOL_ZH.md`](../../docs/RELEASE_DOCKER_POOL_ZH.md)
 
 ## 1) Prepare config
 
