@@ -30,6 +30,19 @@ Services started:
 - `fastclaw-postgres`
 - `openclaw-1..4` (resource-capped)
 
+## 2.1) Keep server-local overrides out of git
+
+Use `docker-compose.override.yml` for machine-specific tweaks (ports, limits, bind mounts, etc.).
+
+```bash
+cd deploy/docker-pool
+cp docker-compose.override.example.yml docker-compose.override.yml
+# edit docker-compose.override.yml for this server only
+docker compose up -d --build
+```
+
+Do not edit `docker-compose.yml` directly on production hosts. Keep it tracking upstream so `git pull` stays conflict-free.
+
 ## 3) Verify
 
 ```bash
@@ -70,7 +83,21 @@ curl -s "$BASE/bot/api/v1/bots/$BOT_ID/status" \
 
 ## Notes
 
-- `max_running_bots = 2` is recommended for 4C8G to avoid OOM/CPU exhaustion.
+- For 4C8G, start with `max_running_bots = 2`, then raise gradually (for example to `4`) only after observing stable memory/CPU usage.
 - `docker_pool.endpoints` defines your pre-provisioned OpenClaw gateway instances.
 - In `docker_pool` mode, K8s-only APIs are intentionally blocked.
 - End-user portal is available at `/portal` after setting Google OAuth config.
+
+## Update workflow
+
+Use this safe sequence when syncing code updates on a production server:
+
+```bash
+cd /opt/fastclaw
+git fetch --all
+git pull
+cd deploy/docker-pool
+docker compose up -d --build fastclaw
+```
+
+If you already changed tracked files locally, stash first, then re-apply only necessary settings into `docker-compose.override.yml`.
