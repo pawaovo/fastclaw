@@ -67,6 +67,7 @@ type portalAIConfigRequest struct {
 type portalAIConfigResponse struct {
 	Provider      string `json:"provider"`
 	BaseURL       string `json:"baseUrl,omitempty"`
+	APIKey        string `json:"apiKey,omitempty"`
 	APIType       string `json:"apiType,omitempty"`
 	Auth          string `json:"auth,omitempty"`
 	ModelID       string `json:"modelId,omitempty"`
@@ -651,7 +652,8 @@ func buildPortalAIConfigResponse(bot *model.Bot, requestedProvider string) (*por
 	if auth := stringFromMap(p, "auth"); auth != "" {
 		resp.Auth = auth
 	}
-	resp.HasAPIKey = stringFromMap(p, "apiKey") != ""
+	resp.APIKey = stringFromMap(p, "apiKey")
+	resp.HasAPIKey = resp.APIKey != ""
 	if modelsRaw, ok := p["models"].([]interface{}); ok && len(modelsRaw) > 0 {
 		m := toMap(modelsRaw[0])
 		resp.ModelID = stringFromMap(m, "id")
@@ -1576,20 +1578,22 @@ const portalHTML = `<!doctype html>
   <title>FastClaw Portal</title>
   <style>
     :root {
-      --bg: #f4f6f8;
+      --bg: #f3f3f3;
+      --bg-soft: #ececec;
       --card: #ffffff;
-      --text: #1f2937;
-      --muted: #6b7280;
-      --line: #e5e7eb;
-      --primary: #2563eb;
-      --primary-hover: #1d4ed8;
-      --danger: #dc2626;
+      --text: #141414;
+      --muted: #666666;
+      --line: #d8d8d8;
+      --primary: #111111;
+      --primary-hover: #2a2a2a;
+      --danger: #8f1d1d;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: radial-gradient(circle at top left, #eef2ff 0%, var(--bg) 45%, #f8fafc 100%);
+      font-family: "IBM Plex Sans", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        linear-gradient(120deg, #fafafa 0%, var(--bg) 40%, var(--bg-soft) 100%);
       color: var(--text);
     }
     .wrap {
@@ -1602,7 +1606,7 @@ const portalHTML = `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 16px;
       padding: 24px;
-      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.06);
       margin-bottom: 16px;
     }
     h1 {
@@ -1627,11 +1631,13 @@ const portalHTML = `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 10px 14px;
-      background: #fff;
+      background: #f8f8f8;
       color: var(--text);
       cursor: pointer;
       font-size: 14px;
+      transition: all 0.15s ease;
     }
+    button:hover { border-color: #bdbdbd; background: #f2f2f2; }
     button.primary {
       background: var(--primary);
       color: #fff;
@@ -1639,9 +1645,9 @@ const portalHTML = `<!doctype html>
     }
     button.primary:hover { background: var(--primary-hover); }
     button.danger {
-      border-color: #fecaca;
+      border-color: #e3b8b8;
       color: var(--danger);
-      background: #fff5f5;
+      background: #fbf3f3;
     }
     input {
       border: 1px solid var(--line);
@@ -1694,7 +1700,7 @@ const portalHTML = `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 14px;
-      background: #fff;
+      background: #fcfcfc;
     }
     .bot h3 {
       margin: 0 0 6px;
@@ -1731,7 +1737,6 @@ const portalHTML = `<!doctype html>
         <div class="row" id="userInfo"></div>
         <div class="row">
           <button class="primary" onclick="createBot()">新增专属实例</button>
-          <button onclick="allocateBot()">自动分配并启动专属 Bot</button>
           <button onclick="refresh()">刷新</button>
           <button class="danger" onclick="logout()">退出登录</button>
         </div>
@@ -1740,7 +1745,7 @@ const portalHTML = `<!doctype html>
 
     <div id="manageCard" class="card hidden">
       <h2 style="margin-top:0">我的 OpenClaw 实例</h2>
-      <div class="meta">实例配额：每个用户 1 个（固定）。如未分配，请点击上方“自动分配并启动专属 Bot”。</div>
+      <div class="meta">实例配额：每个用户 1 个（固定）。如未分配，请点击上方“新增专属实例”。</div>
       <div id="bots" class="bots"></div>
     </div>
   </div>
@@ -1829,7 +1834,7 @@ const portalHTML = `<!doctype html>
             '<div class="row">' +
               '<div class="field">' +
                 '<label>Channel</label>' +
-                '<select id="ch-provider-' + safeId + '">' +
+                '<select id="ch-provider-' + safeId + '" onchange="loadChannelsConfig(\'' + safeId + '\', \'' + b.id + '\')">' +
                   '<option value="telegram">telegram</option>' +
                   '<option value="discord">discord</option>' +
                   '<option value="feishu">feishu</option>' +
@@ -1838,7 +1843,7 @@ const portalHTML = `<!doctype html>
               '</div>' +
               '<div class="field">' +
                 '<label>Account</label>' +
-                '<input id="ch-account-' + safeId + '" value="default" />' +
+                '<input id="ch-account-' + safeId + '" value="default" onblur="loadChannelsConfig(\'' + safeId + '\', \'' + b.id + '\')" />' +
               '</div>' +
               '<div class="field">' +
                 '<label>DM Policy</label>' +
@@ -1934,11 +1939,6 @@ const portalHTML = `<!doctype html>
       await refresh();
     }
 
-    async function allocateBot() {
-      await api('/portal/api/allocate', { method: 'POST' });
-      await refresh();
-    }
-
     async function createBot() {
       const data = await api('/portal/api/bots', { method: 'POST', body: JSON.stringify({}) });
       if (!data.ok) {
@@ -2005,14 +2005,14 @@ const portalHTML = `<!doctype html>
       const cfg = data.config;
       setInput('ai-provider-' + safeId, cfg.provider || 'custom');
       setInput('ai-baseurl-' + safeId, cfg.baseUrl || '');
-      setInput('ai-apikey-' + safeId, '');
+      setInput('ai-apikey-' + safeId, cfg.apiKey || '');
       setInput('ai-modelid-' + safeId, cfg.modelId || '');
       setInput('ai-modelname-' + safeId, cfg.modelName || '');
       setInput('ai-apitype-' + safeId, cfg.apiType || 'openai-completions');
       setInput('ai-auth-' + safeId, cfg.auth || 'api-key');
       setInput('ai-max-' + safeId, cfg.maxTokens || '');
       setInput('ai-context-' + safeId, cfg.contextWindow || '');
-      setAIStatus(safeId, cfg.hasApiKey ? 'API Key already set' : 'API Key not set');
+      setAIStatus(safeId, cfg.hasApiKey ? 'API Key loaded' : 'API Key not set');
     }
 
     async function saveAIConfig(safeId, botId) {
@@ -2038,7 +2038,7 @@ const portalHTML = `<!doctype html>
       const cfg = data.config || {};
       setInput('ai-provider-' + safeId, cfg.provider || payload.provider || 'custom');
       setInput('ai-baseurl-' + safeId, cfg.baseUrl || payload.baseUrl || '');
-      setInput('ai-apikey-' + safeId, '');
+      setInput('ai-apikey-' + safeId, cfg.apiKey || payload.apiKey || '');
       setInput('ai-modelid-' + safeId, cfg.modelId || payload.modelId || '');
       setInput('ai-modelname-' + safeId, cfg.modelName || payload.modelName || '');
       setInput('ai-apitype-' + safeId, cfg.apiType || payload.apiType || 'openai-completions');
@@ -2092,10 +2092,10 @@ const portalHTML = `<!doctype html>
 
       setInput('ch-dm-' + safeId, (cfg.dmPolicy || accountCfg.dmPolicy || 'pairing'));
       setInput('ch-group-' + safeId, (cfg.groupPolicy || accountCfg.groupPolicy || 'open'));
-      setInput('ch-bottoken-' + safeId, '');
-      setInput('ch-token-' + safeId, '');
+      setInput('ch-bottoken-' + safeId, cfg.botToken || accountCfg.botToken || '');
+      setInput('ch-token-' + safeId, cfg.token || accountCfg.token || '');
       setInput('ch-appid-' + safeId, accountCfg.appId || '');
-      setInput('ch-appsecret-' + safeId, '');
+      setInput('ch-appsecret-' + safeId, accountCfg.appSecret || '');
       const allowFrom = Array.isArray(cfg.allowFrom) ? cfg.allowFrom : [];
       setInput('ch-allowfrom-' + safeId, allowFrom.join(','));
       setInput('ch-paircode-' + safeId, '');
@@ -2129,9 +2129,6 @@ const portalHTML = `<!doctype html>
         return;
       }
 
-      setInput('ch-bottoken-' + safeId, '');
-      setInput('ch-token-' + safeId, '');
-      setInput('ch-appsecret-' + safeId, '');
       setChannelStatus(safeId, 'Channel saved');
       await loadChannelsConfig(safeId, botId);
     }
@@ -2207,7 +2204,10 @@ const portalHTML = `<!doctype html>
         const dm = s.dmPolicy || '-';
         const gp = s.groupPolicy || '-';
         const allowFrom = Array.isArray(s.allowFrom) && s.allowFrom.length > 0 ? (' allow=' + s.allowFrom.join(',')) : '';
-        return channel + ' [' + enabled + '] dm=' + dm + ' group=' + gp + allowFrom;
+        const account = s.account ? (' account=' + s.account) : '';
+        const app = s.appId ? (' appId=' + s.appId) : '';
+        const tokenFlags = ' token=' + (s.hasToken ? 'set' : 'empty') + ' botToken=' + (s.hasBotToken ? 'set' : 'empty') + ' appSecret=' + (s.hasAppSecret ? 'set' : 'empty');
+        return channel + ' [' + enabled + '] dm=' + dm + ' group=' + gp + account + app + allowFrom + tokenFlags;
       });
       el.textContent = lines.join(' | ');
     }
