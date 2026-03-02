@@ -252,15 +252,10 @@ func isWebSocketRequest(r *http.Request) bool {
 }
 
 func upstreamRawQuery(rawQuery string) string {
-	if !runtime.IsDockerPoolMode() || rawQuery == "" {
-		return rawQuery
-	}
-	values, err := url.ParseQuery(rawQuery)
-	if err != nil {
-		return rawQuery
-	}
-	values.Del("token")
-	return values.Encode()
+	// Keep query parameters unchanged for both HTTP and WS proxying.
+	// In docker_pool mode, OpenClaw control UI may pass gateway token in query
+	// during the initial WS handshake; stripping it can break dashboard connection.
+	return rawQuery
 }
 
 func injectOpenClawBootstrap(body []byte, botPathID, token string) []byte {
