@@ -253,7 +253,7 @@ func buildDockerPoolGatewayPatchScript() (string, error) {
 	}
 
 	nodeScript := fmt.Sprintf(
-		`const fs=require("fs");const p="/home/node/.openclaw/openclaw.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"));}catch(_e){c={};}c.gateway=c.gateway||{};c.gateway.mode="local";c.gateway.bind=%s;c.gateway.trustedProxies=%s;c.gateway.controlUi=c.gateway.controlUi||{};c.gateway.controlUi.allowedOrigins=%s;if(%s==="token"){c.gateway.auth=c.gateway.auth||{};c.gateway.auth.mode="token";c.gateway.auth.token=%s;}else{c.gateway.auth={mode:"none"};}fs.writeFileSync(p,JSON.stringify(c,null,2));`,
+		`const fs=require("fs");const p="/home/node/.openclaw/openclaw.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"));}catch(_e){c={};}c.gateway=c.gateway||{};c.gateway.mode="local";c.gateway.bind=%s;c.gateway.trustedProxies=%s;c.gateway.controlUi=c.gateway.controlUi||{};c.gateway.controlUi.allowedOrigins=%s;c.gateway.controlUi.dangerouslyDisableDeviceAuth=true;if(%s==="token"){c.gateway.auth=c.gateway.auth||{};c.gateway.auth.mode="token";c.gateway.auth.token=%s;}else{c.gateway.auth={mode:"none"};}fs.writeFileSync(p,JSON.stringify(c,null,2));`,
 		strconv.Quote(bind),
 		string(trustedProxiesJSON),
 		string(allowedOriginsJSON),

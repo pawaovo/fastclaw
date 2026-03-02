@@ -31,17 +31,12 @@ func SyncBotConfigSections(ctx context.Context, bot *model.Bot, sections ...stri
 		return err
 	}
 
-	cfg, err := bot.GetOpenClawConfig()
+	cfgMap, err := bot.GetConfigMap()
 	if err != nil {
 		return fmt.Errorf("failed to load bot config: %w", err)
 	}
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal bot config: %w", err)
-	}
-	var cfgMap map[string]interface{}
-	if err := json.Unmarshal(raw, &cfgMap); err != nil {
-		return fmt.Errorf("failed to normalize bot config: %w", err)
+	if cfgMap == nil {
+		cfgMap = map[string]interface{}{}
 	}
 
 	patch := make(map[string]interface{})

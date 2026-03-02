@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -484,61 +485,45 @@ func updateBotAIConfig(c echo.Context) error {
 		req.Auth = "api-key"
 	}
 
-	config, err := bot.GetOpenClawConfig()
-	if err != nil {
-		config = &model.OpenClawConfig{}
+	cfgMap, err := bot.GetConfigMap()
+	if err != nil || cfgMap == nil {
+		cfgMap = map[string]interface{}{}
 	}
-	if config.Models == nil {
-		config.Models = &model.ModelsConfig{
-			Mode:      "merge",
-			Providers: make(map[string]*model.ProviderConfig),
-		}
+	models := ensureMapField(cfgMap, "models")
+	if stringFromMap(models, "mode") == "" {
+		models["mode"] = "merge"
 	}
-	if config.Models.Providers == nil {
-		config.Models.Providers = make(map[string]*model.ProviderConfig)
-	}
-
-	provider, ok := config.Models.Providers[req.Provider]
-	if !ok || provider == nil {
-		provider = &model.ProviderConfig{}
-	}
-
-	provider.BaseURL = req.BaseURL
-	provider.API = req.APIType
-	provider.Auth = req.Auth
+	providers := ensureMapField(models, "providers")
+	provider := ensureMapField(providers, req.Provider)
+	provider["baseUrl"] = req.BaseURL
+	provider["api"] = req.APIType
+	provider["auth"] = req.Auth
 	if req.APIKey != "" {
-		provider.APIKey = req.APIKey
+		provider["apiKey"] = req.APIKey
 	}
 
 	modelName := req.ModelName
 	if modelName == "" {
 		modelName = req.ModelID
 	}
-	modelCfg := model.ProviderModelConfig{
-		ID:   req.ModelID,
-		Name: modelName,
+	modelCfg := map[string]interface{}{
+		"id":   req.ModelID,
+		"name": modelName,
 	}
 	if req.ContextWindow > 0 {
-		modelCfg.ContextWindow = req.ContextWindow
+		modelCfg["contextWindow"] = req.ContextWindow
 	}
 	if req.MaxTokens > 0 {
-		modelCfg.MaxTokens = req.MaxTokens
+		modelCfg["maxTokens"] = req.MaxTokens
 	}
-	provider.Models = []model.ProviderModelConfig{modelCfg}
-	config.Models.Providers[req.Provider] = provider
+	provider["models"] = []map[string]interface{}{modelCfg}
 
-	if config.Agents == nil {
-		config.Agents = &model.AgentsConfig{}
-	}
-	if config.Agents.Defaults == nil {
-		config.Agents.Defaults = &model.AgentDefaultsConfig{}
-	}
-	if config.Agents.Defaults.Model == nil {
-		config.Agents.Defaults.Model = &model.AgentModelConfig{}
-	}
-	config.Agents.Defaults.Model.Primary = req.Provider + "/" + req.ModelID
+	agents := ensureMapField(cfgMap, "agents")
+	defaults := ensureMapField(agents, "defaults")
+	modelNode := ensureMapField(defaults, "model")
+	modelNode["primary"] = req.Provider + "/" + req.ModelID
 
-	if err := bot.SetOpenClawConfig(config); err != nil {
+	if err := bot.SetConfigMap(cfgMap); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to persist ai config"})
 	}
 	if err := model.UpdateBot(bot); err != nil {
@@ -565,7 +550,7 @@ func updateBotAIConfig(c echo.Context) error {
 }
 
 func buildPortalAIConfigResponse(bot *model.Bot, requestedProvider string) (*portalAIConfigResponse, error) {
-	config, err := bot.GetOpenClawConfig()
+	cfgMap, err := bot.GetConfigMap()
 	if err != nil {
 		return nil, err
 	}
@@ -576,46 +561,84 @@ func buildPortalAIConfigResponse(bot *model.Bot, requestedProvider string) (*por
 		Auth:     "api-key",
 	}
 
-	if config == nil || config.Models == nil || len(config.Models.Providers) == 0 {
+	if cfgMap == nil {
+		return resp, nil
+	}
+	models := toMap(cfgMap["models"])
+	if models == nil {
+		return resp, nil
+	}
+	providers := toMap(models["providers"])
+	if len(providers) == 0 {
 		return resp, nil
 	}
 
 	providerName := requestedProvider
-	if providerName == "" && config.Agents != nil && config.Agents.Defaults != nil && config.Agents.Defaults.Model != nil {
-		primary := strings.TrimSpace(config.Agents.Defaults.Model.Primary)
+	if providerName == "" {
+		agents := toMap(cfgMap["agents"])
+		defaults := toMap(agents["defaults"])
+		modelNode := toMap(defaults["model"])
+		primary := stringFromMap(modelNode, "primary")
 		if idx := strings.Index(primary, "/"); idx > 0 {
 			providerName = strings.TrimSpace(primary[:idx])
 		}
 	}
+	if providerName != "" {
+		if _, ok := providers[providerName]; !ok {
+			providerName = ""
+		}
+	}
 	if providerName == "" {
-		for k := range config.Models.Providers {
-			providerName = k
-			break
+		if _, ok := providers["custom"]; ok {
+			providerName = "custom"
+		}
+	}
+	if providerName == "" {
+		keys := make([]string, 0, len(providers))
+		for k := range providers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if len(keys) > 0 {
+			providerName = keys[0]
 		}
 	}
 	if providerName == "" {
 		return resp, nil
 	}
 
-	p := config.Models.Providers[providerName]
+	p := toMap(providers[providerName])
 	if p == nil {
 		return resp, nil
 	}
 
 	resp.Provider = providerName
-	resp.BaseURL = p.BaseURL
-	if p.API != "" {
-		resp.APIType = p.API
+	resp.BaseURL = stringFromMap(p, "baseUrl")
+	if apiType := stringFromMap(p, "api"); apiType != "" {
+		resp.APIType = apiType
 	}
-	if p.Auth != "" {
-		resp.Auth = p.Auth
+	if auth := stringFromMap(p, "auth"); auth != "" {
+		resp.Auth = auth
 	}
-	resp.HasAPIKey = strings.TrimSpace(p.APIKey) != ""
-	if len(p.Models) > 0 {
-		resp.ModelID = p.Models[0].ID
-		resp.ModelName = p.Models[0].Name
-		resp.MaxTokens = p.Models[0].MaxTokens
-		resp.ContextWindow = p.Models[0].ContextWindow
+	resp.HasAPIKey = stringFromMap(p, "apiKey") != ""
+	if modelsRaw, ok := p["models"].([]interface{}); ok && len(modelsRaw) > 0 {
+		m := toMap(modelsRaw[0])
+		resp.ModelID = stringFromMap(m, "id")
+		resp.ModelName = stringFromMap(m, "name")
+		resp.MaxTokens = intFromMap(m, "maxTokens")
+		resp.ContextWindow = intFromMap(m, "contextWindow")
+	}
+	if resp.ModelID == "" {
+		resp.ModelID = stringFromMap(p, "modelId")
+		if resp.ModelName == "" {
+			resp.ModelName = stringFromMap(p, "modelName")
+		}
+		if resp.MaxTokens == 0 {
+			resp.MaxTokens = intFromMap(p, "maxTokens")
+		}
+		if resp.ContextWindow == 0 {
+			resp.ContextWindow = intFromMap(p, "contextWindow")
+		}
 	}
 	return resp, nil
 }
@@ -630,13 +653,15 @@ func getBotChannels(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
 	}
 
-	config, err := bot.GetOpenClawConfig()
+	cfgMap, err := bot.GetConfigMap()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to read bot config"})
 	}
 	channels := map[string]interface{}{}
-	if config != nil && config.Channels != nil {
-		channels = map[string]interface{}(config.Channels)
+	if cfgMap != nil {
+		if raw := toMap(cfgMap["channels"]); raw != nil {
+			channels = raw
+		}
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -688,14 +713,11 @@ func upsertBotChannel(c echo.Context) error {
 		req.GroupPolicy = "open"
 	}
 
-	config, err := bot.GetOpenClawConfig()
-	if err != nil {
-		config = &model.OpenClawConfig{}
+	cfgMap, err := bot.GetConfigMap()
+	if err != nil || cfgMap == nil {
+		cfgMap = map[string]interface{}{}
 	}
-	if config.Channels == nil {
-		config.Channels = model.ChannelsConfig{}
-	}
-	channels := map[string]interface{}(config.Channels)
+	channels := ensureMapField(cfgMap, "channels")
 	channelCfg := toMap(channels[channel])
 	if channelCfg == nil {
 		channelCfg = map[string]interface{}{}
@@ -751,9 +773,8 @@ func upsertBotChannel(c echo.Context) error {
 	}
 
 	channels[channel] = channelCfg
-	config.Channels = model.ChannelsConfig(channels)
 
-	if err := bot.SetOpenClawConfig(config); err != nil {
+	if err := bot.SetConfigMap(cfgMap); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to persist channel config"})
 	}
 	if err := model.UpdateBot(bot); err != nil {
@@ -793,19 +814,17 @@ func deleteBotChannel(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel is required"})
 	}
 
-	config, err := bot.GetOpenClawConfig()
+	cfgMap, err := bot.GetConfigMap()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to read bot config"})
 	}
-	if config == nil || config.Channels == nil {
+	channels := toMap(cfgMap["channels"])
+	if channels == nil {
 		return c.JSON(http.StatusOK, map[string]any{"ok": true})
 	}
-
-	channels := map[string]interface{}(config.Channels)
 	delete(channels, channel)
-	config.Channels = model.ChannelsConfig(channels)
 
-	if err := bot.SetOpenClawConfig(config); err != nil {
+	if err := bot.SetConfigMap(cfgMap); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to update channel config"})
 	}
 	if err := model.UpdateBot(bot); err != nil {
@@ -845,15 +864,15 @@ func testBotChannel(c echo.Context) error {
 		account = "default"
 	}
 
-	config, err := bot.GetOpenClawConfig()
+	cfgMap, err := bot.GetConfigMap()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to read bot config"})
 	}
-	if config == nil || config.Channels == nil {
+	channels := toMap(cfgMap["channels"])
+	if channels == nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel config not found"})
 	}
 
-	channels := map[string]interface{}(config.Channels)
 	channelCfg := toMap(channels[channel])
 	if channelCfg == nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel config not found"})
@@ -1016,6 +1035,18 @@ func toMap(v interface{}) map[string]interface{} {
 	}
 }
 
+func ensureMapField(parent map[string]interface{}, key string) map[string]interface{} {
+	if parent == nil {
+		return map[string]interface{}{}
+	}
+	if existing := toMap(parent[key]); existing != nil {
+		return existing
+	}
+	next := map[string]interface{}{}
+	parent[key] = next
+	return next
+}
+
 func normalizeStringList(input []string) []string {
 	if len(input) == 0 {
 		return nil
@@ -1152,6 +1183,34 @@ func boolFromMap(m map[string]interface{}, key string) bool {
 	}
 	b, _ := v.(bool)
 	return b
+}
+
+func intFromMap(m map[string]interface{}, key string) int {
+	if m == nil {
+		return 0
+	}
+	return intFromAny(m[key])
+}
+
+func intFromAny(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int8:
+		return int(n)
+	case int16:
+		return int(n)
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case float32:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
 }
 
 func listUserBots(user *model.PortalUser) ([]portalBotResponse, error) {
@@ -1892,9 +1951,17 @@ const portalHTML = `<!doctype html>
         setAIStatus(safeId, 'Save failed: ' + (data.message || 'unknown error'));
         return;
       }
+      const cfg = data.config || {};
+      setInput('ai-provider-' + safeId, cfg.provider || payload.provider || 'custom');
+      setInput('ai-baseurl-' + safeId, cfg.baseUrl || payload.baseUrl || '');
       setInput('ai-apikey-' + safeId, '');
-      setAIStatus(safeId, 'Saved');
-      await refresh();
+      setInput('ai-modelid-' + safeId, cfg.modelId || payload.modelId || '');
+      setInput('ai-modelname-' + safeId, cfg.modelName || payload.modelName || '');
+      setInput('ai-apitype-' + safeId, cfg.apiType || payload.apiType || 'openai-completions');
+      setInput('ai-auth-' + safeId, cfg.auth || payload.auth || 'api-key');
+      setInput('ai-max-' + safeId, cfg.maxTokens || payload.maxTokens || '');
+      setInput('ai-context-' + safeId, cfg.contextWindow || payload.contextWindow || '');
+      setAIStatus(safeId, cfg.hasApiKey ? 'Saved (API Key stored)' : 'Saved');
     }
 
     function getInput(id) {
