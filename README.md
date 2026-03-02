@@ -2,6 +2,27 @@
 
 Kubernetes-native platform for managing and orchestrating [OpenClaw](https://openclaw.ai/) bot instances. Provides a RESTful API to create, deploy, and manage AI agent bots in a multi-tenant environment.
 
+## Single-server deployment (Docker Pool)
+
+If you want to run FastClaw without Kubernetes (for example on a 4C8G VPS), use the docker-pool runtime in:
+
+- [`deploy/docker-pool/README.md`](deploy/docker-pool/README.md)
+- [`docs/DEPLOY_DOCKER_POOL_ZH.md`](docs/DEPLOY_DOCKER_POOL_ZH.md) (Chinese, end-to-end guide)
+
+Recommended command:
+
+```bash
+cd deploy/docker-pool
+./init-reset.sh -3
+```
+
+This gives you:
+
+- Portal login/register (including Google OAuth if configured)
+- One dedicated OpenClaw instance per user (quota = 1 per user)
+- Configurable pool size (`-1` to `-4` in current compose)
+- Ready-to-use OpenClaw proxy access via `/proxy/{slug}/`
+
 ## Features
 
 - **Bot Lifecycle** - Create, start, stop, restart, upgrade, and delete bot instances

@@ -2,6 +2,24 @@
 
 This deployment is for a single 4C8G server using `runtime.mode = "docker_pool"`.
 
+## Quick start (recommended)
+
+```bash
+cd deploy/docker-pool
+chmod +x deploy.sh init-reset.sh rebuild-fastclaw-safe.sh
+./init-reset.sh -3
+```
+
+After it finishes:
+
+- Open `http://<server-ip>:18080/portal`
+- Register/Login (local email or Google OAuth)
+- Open your dedicated instance and configure AI provider in `AI Config`
+
+Chinese full guide:
+
+- [`docs/DEPLOY_DOCKER_POOL_ZH.md`](../../docs/DEPLOY_DOCKER_POOL_ZH.md)
+
 ## 1) Prepare config
 
 ```bash
