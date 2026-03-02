@@ -282,8 +282,12 @@ func patchControlUIConfig(body []byte, scheme, host, botPathID, token string) []
 	}
 
 	proxyBasePath := "/proxy/" + botPathID
+	wsScheme := "ws"
+	if strings.EqualFold(scheme, "https") {
+		wsScheme = "wss"
+	}
 	cfg["basePath"] = proxyBasePath
-	cfg["gatewayUrl"] = fmt.Sprintf("%s://%s%s", scheme, host, proxyBasePath)
+	cfg["gatewayUrl"] = fmt.Sprintf("%s://%s%s", wsScheme, host, proxyBasePath)
 	if strings.TrimSpace(token) != "" {
 		cfg["token"] = token
 	}
