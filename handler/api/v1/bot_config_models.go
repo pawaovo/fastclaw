@@ -6,6 +6,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 )
@@ -98,7 +99,7 @@ func AddModelProvider(c echo.Context) error {
 	}
 
 	// Sync only models section to pod if bot is running (don't touch gateway)
-	if bot.Status == model.BotStatusRunning {
+	if bot.Status == model.BotStatusRunning && !runtime.IsDockerPoolMode() {
 		go func() {
 			ctx := context.Background()
 			if err := k8s.SyncSectionsToPod(ctx, bot.ID, "models"); err != nil {
@@ -192,7 +193,7 @@ func UpdateModelProvider(c echo.Context) error {
 	}
 
 	// Sync only models section to pod if bot is running (don't touch gateway)
-	if bot.Status == model.BotStatusRunning {
+	if bot.Status == model.BotStatusRunning && !runtime.IsDockerPoolMode() {
 		go func() {
 			ctx := context.Background()
 			if err := k8s.SyncSectionsToPod(ctx, bot.ID, "models"); err != nil {
@@ -242,7 +243,7 @@ func DeleteModelProvider(c echo.Context) error {
 	}
 
 	// Sync only models section to pod if bot is running (don't touch gateway)
-	if bot.Status == model.BotStatusRunning {
+	if bot.Status == model.BotStatusRunning && !runtime.IsDockerPoolMode() {
 		go func() {
 			ctx := context.Background()
 			if err := k8s.SyncSectionsToPod(ctx, bot.ID, "models"); err != nil {

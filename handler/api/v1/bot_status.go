@@ -5,7 +5,7 @@ import (
 
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
-	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 )
@@ -34,14 +34,14 @@ func GetBotStatus(c echo.Context) error {
 	// Check actual K8s status if bot is supposed to be running
 	if bot.Status == model.BotStatusRunning {
 		ctx := context.Background()
-		ready, err := k8s.GetDeploymentStatus(ctx, bot.ID)
+		ready, err := runtime.GetBotReady(ctx, bot)
 		if err != nil {
 			response.Ready = false
 		} else {
 			response.Ready = ready
-			// Sync status: if K8s deployment doesn't exist, update DB to stopped
+			// Sync status: if runtime workload doesn't exist, update DB to stopped
 			if !ready {
-				exists, _ := k8s.DeploymentExists(ctx, bot.ID)
+				exists, _ := runtime.DeploymentExists(ctx, bot.ID)
 				if !exists {
 					bot.Status = model.BotStatusStopped
 					bot.Endpoint = ""

@@ -1,0 +1,22 @@
+services:
+  fastclaw:
+    # Example: override config mount on server
+    # volumes:
+    #   - ./config.toml:/app/config.toml:ro
+
+  openclaw-1:
+    # Example: tune resource limits per host
+    # mem_limit: 1200m
+    # cpus: "0.7"
+
+  openclaw-2:
+    # mem_limit: 1200m
+    # cpus: "0.7"
+
+  openclaw-3:
+    # mem_limit: 1200m
+    # cpus: "0.7"
+
+  openclaw-4:
+    # mem_limit: 1200m
+    # cpus: "0.7"

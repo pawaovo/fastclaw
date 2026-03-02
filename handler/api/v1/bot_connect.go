@@ -7,6 +7,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 	"github.com/spf13/viper"
@@ -42,24 +43,27 @@ func GetBotConnect(c echo.Context) error {
 
 	ctx := context.Background()
 
-	// Check if deployment is ready
-	ready, err := k8s.GetDeploymentStatus(ctx, bot.ID)
+	ready, err := runtime.GetBotReady(ctx, bot)
 	if err != nil {
-		return util.InternalError(c, "failed to get deployment status")
+		return util.InternalError(c, "failed to get bot status")
 	}
 	response.Ready = ready
 
-	// Get service endpoint (internal)
-	endpoint, err := k8s.GetServiceEndpoint(ctx, bot.ID)
+	// Get runtime endpoint (internal)
+	endpoint, err := runtime.GetBotEndpoint(ctx, bot)
 	if err != nil {
-		return util.InternalError(c, "failed to get service endpoint")
+		return util.InternalError(c, "failed to get bot endpoint")
 	}
 	response.Endpoint = endpoint
 
 	// Build external URL based on domain template
 	if ready {
-		serviceName := k8s.GetServiceName(bot.ID)
-		namespace := k8s.GetNamespace()
+		serviceName := ""
+		namespace := ""
+		if !runtime.IsDockerPoolMode() {
+			serviceName = k8s.GetServiceName(bot.ID)
+			namespace = k8s.GetNamespace()
+		}
 
 		// Get domain template: app-level first, then config file fallback
 		var domainTemplate string

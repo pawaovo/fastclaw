@@ -10,12 +10,14 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
@@ -116,35 +118,51 @@ func ProxyToBot(c echo.Context) error {
 	// Start a poller to approve devices that become pending in the next ~16s
 	// (from WebUI JS requests that follow the initial page load).
 	accessToken := ""
-	if token := c.QueryParam("token"); token != "" && token == bot.AccessToken {
-		accessToken = bot.AccessToken
-		go autoApprovePoller(bot.ID, accessToken)
+	if !runtime.IsDockerPoolMode() {
+		if token := c.QueryParam("token"); token != "" && token == bot.AccessToken {
+			accessToken = bot.AccessToken
+			go autoApprovePoller(bot.ID, accessToken)
+		}
 	}
 
 	if bot.Status != model.BotStatusRunning {
 		return util.BadRequest(c, "bot is not running")
 	}
 
-	// Get target URL from K8s service (uses ClusterIP in local dev mode, DNS in production)
-	targetHost, err := k8s.GetServiceEndpoint(context.Background(), bot.ID)
+	targetHost, err := runtime.GetBotEndpoint(context.Background(), bot)
 	if err != nil {
-		return util.InternalError(c, "failed to get service endpoint")
+		return util.InternalError(c, "failed to get bot endpoint")
 	}
 	if targetHost == "" {
-		return util.NotFound(c, "bot service not found")
+		return util.NotFound(c, "bot endpoint not found")
 	}
 
 	// Get the remaining path after /proxy/{bot_id}
 	remainingPath := c.Param("*")
+	// WebSocket requests should not be redirected; proxy root directly.
+	if isWebSocketRequest(c.Request()) {
+		if remainingPath == "" {
+			remainingPath = "/"
+		} else if !strings.HasPrefix(remainingPath, "/") {
+			remainingPath = "/" + remainingPath
+		}
+		return proxyWebSocket(c, targetHost, remainingPath, bot.ID, accessToken)
+	}
+
 	if remainingPath == "" {
+		// Canonicalize bot root URL with trailing slash so relative assets resolve
+		// under /proxy/{bot_id}/ instead of /proxy/.
+		reqPath := c.Request().URL.Path
+		if !strings.HasSuffix(reqPath, "/") {
+			redirectURL := reqPath + "/"
+			if rawQuery := c.QueryString(); rawQuery != "" {
+				redirectURL += "?" + rawQuery
+			}
+			return c.Redirect(http.StatusMovedPermanently, redirectURL)
+		}
 		remainingPath = "/"
 	} else if !strings.HasPrefix(remainingPath, "/") {
 		remainingPath = "/" + remainingPath
-	}
-
-	// Check if this is a WebSocket upgrade request
-	if isWebSocketRequest(c.Request()) {
-		return proxyWebSocket(c, targetHost, remainingPath, bot.ID, accessToken)
 	}
 
 	// Regular HTTP proxy
@@ -160,7 +178,7 @@ func ProxyToBot(c echo.Context) error {
 		originalDirector(req)
 		req.Host = targetHost
 		req.URL.Path = remainingPath
-		req.URL.RawQuery = c.QueryString()
+		req.URL.RawQuery = upstreamRawQuery(c.QueryString())
 
 		// Forward real client IP
 		clientIP := c.RealIP()
@@ -172,31 +190,55 @@ func ProxyToBot(c echo.Context) error {
 		}
 	}
 
-	// Auto-approve NOT_PAIRED HTTP responses so subsequent client retries succeed
-	if accessToken != "" {
-		botID := bot.ID
-		token := accessToken
-		proxy.ModifyResponse = func(resp *http.Response) error {
-			if resp.StatusCode < 400 {
-				return nil
-			}
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return nil
-			}
-			resp.Body = io.NopCloser(bytes.NewReader(body))
+	// Response hook:
+	// 1) Inject OpenClaw client bootstrap into HTML so ws gateway uses /proxy/{bot_id}.
+	// 2) Auto-approve NOT_PAIRED errors for non-docker-pool mode.
+	botID := bot.ID
+	botPathID := botIdentifier
+	token := accessToken
+	requestToken := c.QueryParam("token")
+	injectedGatewayToken := requestToken
+	if runtime.IsDockerPoolMode() {
+		// docker_pool always uses a shared gateway token for pooled instances.
+		injectedGatewayToken = runtime.DockerPoolGatewayToken()
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+		needHTMLInject := strings.Contains(contentType, "text/html")
+		needControlUIConfigPatch := strings.Contains(resp.Request.URL.Path, "/__openclaw/control-ui-config.json")
+		needPairCheck := token != "" && !runtime.IsDockerPoolMode() && resp.StatusCode >= 400
 
-			if isNotPairedResponse(body) {
-				fmt.Printf("[Proxy] NOT_PAIRED detected in HTTP response for bot %s, auto-approving...\n", botID)
-				go func() {
-					ctx := context.Background()
-					if err := k8s.AutoApproveAllPending(ctx, botID, token); err != nil {
-						fmt.Printf("[Proxy] Auto-approve (HTTP) failed for bot %s: %v\n", botID, err)
-					}
-				}()
-			}
+		if !needHTMLInject && !needControlUIConfigPatch && !needPairCheck {
 			return nil
 		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil
+		}
+
+		if needHTMLInject {
+			body = injectOpenClawBootstrap(body, botPathID, injectedGatewayToken)
+		}
+		if needControlUIConfigPatch {
+			body = patchControlUIConfig(body, c.Scheme(), c.Request().Host, botPathID, injectedGatewayToken)
+			resp.Header.Set("Content-Type", "application/json; charset=utf-8")
+		}
+
+		if needPairCheck && isNotPairedResponse(body) {
+			fmt.Printf("[Proxy] NOT_PAIRED detected in HTTP response for bot %s, auto-approving...\n", botID)
+			go func() {
+				ctx := context.Background()
+				if err := k8s.AutoApproveAllPending(ctx, botID, token); err != nil {
+					fmt.Printf("[Proxy] Auto-approve (HTTP) failed for bot %s: %v\n", botID, err)
+				}
+			}()
+		}
+
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return nil
 	}
 
 	proxy.ServeHTTP(c.Response(), c.Request())
@@ -204,15 +246,61 @@ func ProxyToBot(c echo.Context) error {
 }
 
 func isWebSocketRequest(r *http.Request) bool {
-	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+	upgrade := strings.ToLower(r.Header.Get("Upgrade"))
+	connection := strings.ToLower(r.Header.Get("Connection"))
+	return strings.Contains(upgrade, "websocket") && strings.Contains(connection, "upgrade")
+}
+
+func upstreamRawQuery(rawQuery string) string {
+	// Keep query parameters unchanged for both HTTP and WS proxying.
+	// In docker_pool mode, OpenClaw control UI may pass gateway token in query
+	// during the initial WS handshake; stripping it can break dashboard connection.
+	return rawQuery
+}
+
+func injectOpenClawBootstrap(body []byte, botPathID, token string) []byte {
+	html := string(body)
+	pathLiteral := strconv.Quote("/proxy/" + botPathID)
+	tokenLiteral := strconv.Quote(token)
+	script := fmt.Sprintf(`<script>(function(){try{var key="openclaw.control.settings.v1";var current={};var raw=window.localStorage.getItem(key);if(raw){current=JSON.parse(raw)||{};}var proto=window.location.protocol==="https:"?"wss":"ws";current.gatewayUrl=proto+"://"+window.location.host+%s;if(%s!==""){current.token=%s;}window.localStorage.setItem(key,JSON.stringify(current));}catch(_e){}})();</script>`, pathLiteral, tokenLiteral, tokenLiteral)
+
+	if strings.Contains(strings.ToLower(html), "</head>") {
+		return []byte(strings.Replace(html, "</head>", script+"</head>", 1))
+	}
+	return append([]byte(script), body...)
+}
+
+func patchControlUIConfig(body []byte, scheme, host, botPathID, token string) []byte {
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return body
+	}
+
+	proxyBasePath := "/proxy/" + botPathID
+	wsScheme := "ws"
+	if strings.EqualFold(scheme, "https") {
+		wsScheme = "wss"
+	}
+	cfg["basePath"] = proxyBasePath
+	cfg["gatewayUrl"] = fmt.Sprintf("%s://%s%s", wsScheme, host, proxyBasePath)
+	if strings.TrimSpace(token) != "" {
+		cfg["token"] = token
+	}
+
+	patched, err := json.Marshal(cfg)
+	if err != nil {
+		return body
+	}
+	return patched
 }
 
 // buildWSRequestHeaders builds the headers for the backend WebSocket connection
 func buildWSRequestHeaders(c echo.Context, targetHost string) http.Header {
 	requestHeader := http.Header{}
-	// Set Origin to the target host to pass OpenClaw's origin check
-	// OpenClaw doesn't support wildcard "*" in allowedOrigins
-	requestHeader.Set("Origin", fmt.Sprintf("http://%s", targetHost))
+	// Keep websocket Origin aligned with the portal/proxy origin.
+	// This avoids docker_pool mode origin mismatches when backend endpoint
+	// is an internal host like openclaw-3:18789.
+	requestHeader.Set("Origin", fmt.Sprintf("%s://%s", c.Scheme(), c.Request().Host))
 	if protocol := c.Request().Header.Get("Sec-WebSocket-Protocol"); protocol != "" {
 		requestHeader.Set("Sec-WebSocket-Protocol", protocol)
 	}
@@ -248,7 +336,7 @@ func proxyWebSocket(c echo.Context, targetHost, path, botID, accessToken string)
 		Scheme:   "ws",
 		Host:     targetHost,
 		Path:     path,
-		RawQuery: c.QueryString(),
+		RawQuery: upstreamRawQuery(c.QueryString()),
 	}
 
 	requestHeader := buildWSRequestHeaders(c, targetHost)
@@ -257,7 +345,7 @@ func proxyWebSocket(c echo.Context, targetHost, path, botID, accessToken string)
 	backendConn, resp, err := websocket.DefaultDialer.Dial(backendURL.String(), requestHeader)
 
 	// Handle NOT_PAIRED during WebSocket handshake (upgrade rejected with HTTP error)
-	if err != nil && accessToken != "" && resp != nil && resp.Body != nil {
+	if err != nil && accessToken != "" && !runtime.IsDockerPoolMode() && resp != nil && resp.Body != nil {
 		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr == nil && isNotPairedResponse(body) {
@@ -315,7 +403,7 @@ func proxyWebSocket(c echo.Context, targetHost, path, botID, accessToken string)
 
 			// Check first message for NOT_PAIRED (handles the case where
 			// WebSocket upgrade succeeds but pairing is checked at message level)
-			if firstMessage && accessToken != "" {
+			if firstMessage && accessToken != "" && !runtime.IsDockerPoolMode() {
 				firstMessage = false
 				if isNotPairedResponse(msg) {
 					fmt.Printf("[Proxy] NOT_PAIRED detected in WS message for bot %s, auto-approving...\n", botID)

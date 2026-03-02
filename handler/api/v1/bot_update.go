@@ -7,6 +7,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 )
@@ -62,7 +63,7 @@ func UpdateBot(c echo.Context) error {
 	}
 
 	// If bot is running and config was updated, sync to pod
-	if req.Config != nil && bot.Status == model.BotStatusRunning {
+	if req.Config != nil && bot.Status == model.BotStatusRunning && !runtime.IsDockerPoolMode() {
 		go func() {
 			ctx := context.Background()
 			if err := k8s.SyncConfigToPod(ctx, bot.ID); err != nil {

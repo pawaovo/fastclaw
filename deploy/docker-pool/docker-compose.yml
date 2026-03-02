@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: fastclaw-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fastclaw
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  fastclaw:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: fastclaw-server
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "18080:18080"
+    environment:
+      FASTCLAW_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["./fastclaw", "server", "-c", "/app/config.toml"]
+
+  openclaw-1:
+    image: 1panel/openclaw:latest
+    container_name: openclaw-1
+    restart: unless-stopped
+    mem_limit: 1400m
+    cpus: "0.8"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1152"
+    volumes:
+      - oc1-data:/home/node/.openclaw
+
+  openclaw-2:
+    image: 1panel/openclaw:latest
+    container_name: openclaw-2
+    restart: unless-stopped
+    mem_limit: 1400m
+    cpus: "0.8"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1152"
+    volumes:
+      - oc2-data:/home/node/.openclaw
+
+  openclaw-3:
+    image: 1panel/openclaw:latest
+    container_name: openclaw-3
+    restart: unless-stopped
+    mem_limit: 1400m
+    cpus: "0.8"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1152"
+    volumes:
+      - oc3-data:/home/node/.openclaw
+
+  openclaw-4:
+    image: 1panel/openclaw:latest
+    container_name: openclaw-4
+    restart: unless-stopped
+    mem_limit: 1400m
+    cpus: "0.8"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1152"
+    volumes:
+      - oc4-data:/home/node/.openclaw
+
+volumes:
+  pg-data:
+  oc1-data:
+  oc2-data:
+  oc3-data:
+  oc4-data:

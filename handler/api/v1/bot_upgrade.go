@@ -35,6 +35,10 @@ type UpgradeBotsResponse struct {
 // UpgradeBot upgrades a single bot's openclaw image
 // POST /bot/api/v1/admin/bots/:id/upgrade
 func UpgradeBot(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	botID := c.Param("id")
 	if botID == "" {
 		return util.BadRequest(c, "bot id is required")
@@ -95,6 +99,10 @@ func UpgradeBot(c echo.Context) error {
 // UpgradeAllBots upgrades all running bots to a new openclaw image
 // POST /bot/api/v1/admin/bots/upgrade
 func UpgradeAllBots(c echo.Context) error {
+	if err := ensureK8sMode(c); err != nil {
+		return err
+	}
+
 	var req UpgradeBotsRequest
 	if err := c.Bind(&req); err != nil {
 		return util.BadRequest(c, "invalid request body")

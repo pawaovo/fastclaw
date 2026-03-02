@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ const (
 	BotStatusStopped BotStatus = "stopped"
 	BotStatusError   BotStatus = "error"
 )
+
+var ErrUserBotLimitExceeded = errors.New("each user can only have one bot instance")
 
 type Bot struct {
 	ID          string          `json:"id" gorm:"primaryKey;type:varchar(36)"`
@@ -308,6 +311,21 @@ func ListBotsByAppAndUser(appID, userID string) ([]*Bot, error) {
 	return bots, nil
 }
 
+func HasBotForAppAndUser(appID, userID string) (bool, error) {
+	var count int64
+	query := util.GetDB().Model(&Bot{})
+	if appID != "" {
+		query = query.Where("app_id = ?", appID)
+	}
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func ListBotsByStatus(status BotStatus) ([]*Bot, error) {
 	var bots []*Bot
 	if err := util.GetDB().Where("status = ?", status).Find(&bots).Error; err != nil {
@@ -327,10 +345,8 @@ func DeleteBot(id string) error {
 func UpdateBotStatus(id string, status BotStatus, endpoint string) error {
 	updates := map[string]interface{}{
 		"status":     status,
+		"endpoint":   endpoint,
 		"updated_at": time.Now(),
-	}
-	if endpoint != "" {
-		updates["endpoint"] = endpoint
 	}
 	return util.GetDB().Model(&Bot{}).Where("id = ?", id).Updates(updates).Error
 }
@@ -341,7 +357,13 @@ func AutoMigrate() error {
 	if err := AutoMigrateApp(); err != nil {
 		return err
 	}
+	if err := AutoMigratePortalUser(); err != nil {
+		return err
+	}
 	if err := util.GetDB().AutoMigrate(&Bot{}); err != nil {
+		return err
+	}
+	if err := AutoMigrateRuntimeAllocation(); err != nil {
 		return err
 	}
 	// Migrate existing bots without slug or access_token

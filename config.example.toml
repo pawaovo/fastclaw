@@ -17,6 +17,21 @@ timezone = "Asia/Shanghai"
 kubeconfig = ""  # Empty for in-cluster config
 namespace = "fastclaw"
 
+[runtime]
+# k8s | docker_pool
+mode = "k8s"
+# 0 means unlimited
+max_running_bots = 2
+
+[docker_pool]
+# Only used when runtime.mode = "docker_pool"
+# For single-server deployment, point to pre-started OpenClaw gateways.
+endpoints = ["127.0.0.1:18891", "127.0.0.1:18892", "127.0.0.1:18893", "127.0.0.1:18894"]
+# Health guard tuning for docker_pool mode.
+health_check_interval_seconds = 20
+health_fail_threshold = 3
+health_startup_grace_seconds = 120
+
 [storage]
 pvc_name = "fastclaw-shared-data"
 base_path = "/fastclaw-data"
@@ -33,3 +48,14 @@ cpu_limit = "2000m"
 memory_limit = "4Gi"
 cpu_request = "500m"
 memory_request = "1Gi"
+
+[portal]
+# Existing app for portal users. Empty means auto-create by app_name.
+app_id = ""
+app_name = "FastClaw Portal"
+# Session signing secret for portal cookies.
+session_secret = "change-this-portal-session-secret"
+# Google OAuth settings.
+google_client_id = ""
+google_client_secret = ""
+google_redirect_url = "http://127.0.0.1:18080/portal/auth/google/callback"

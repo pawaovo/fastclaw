@@ -5,7 +5,7 @@ import (
 
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
-	"github.com/fastclaw-ai/fastclaw/service/k8s"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 )
@@ -18,14 +18,14 @@ func DeleteBot(c echo.Context) error {
 
 	ctx := context.Background()
 
-	// Delete K8s resources if running
+	// Delete runtime resources if running
 	if bot.Status == model.BotStatusRunning {
-		if err := k8s.DeleteDeployment(ctx, bot.ID); err != nil {
-			return util.InternalError(c, "failed to delete deployment")
+		if err := runtime.StopBot(ctx, bot); err != nil {
+			return util.InternalError(c, "failed to stop bot runtime")
 		}
-		if err := k8s.DeleteService(ctx, bot.ID); err != nil {
-			return util.InternalError(c, "failed to delete service")
-		}
+	} else {
+		// Release stale lease in docker_pool mode (best effort).
+		_ = runtime.ReleaseBot(bot.ID)
 	}
 
 	// Delete from database

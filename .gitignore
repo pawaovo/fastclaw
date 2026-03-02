@@ -74,6 +74,7 @@ temp/
 
 # Deploy secrets (never commit real secrets)
 deploy/k8s/secrets.yaml
+deploy/docker-pool/docker-compose.override.yml
 
 # Local development
 Caddyfile

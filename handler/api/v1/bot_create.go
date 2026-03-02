@@ -3,10 +3,12 @@ package v1
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/fastclaw-ai/fastclaw/middleware"
 	"github.com/fastclaw-ai/fastclaw/model"
+	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 	"github.com/spf13/viper"
@@ -56,6 +58,14 @@ func CreateBot(c echo.Context) error {
 		appID = app.ID
 	}
 
+	hasExisting, err := model.HasBotForAppAndUser(appID, req.UserID)
+	if err != nil {
+		return util.InternalError(c, "failed to check user bot quota")
+	}
+	if hasExisting {
+		return util.BadRequest(c, model.ErrUserBotLimitExceeded.Error())
+	}
+
 	bot := &model.Bot{
 		AppID:     appID,
 		UserID:    req.UserID,
@@ -92,6 +102,25 @@ func isValidSlug(slug string) bool {
 }
 
 func buildAccessURL(slug, token string) string {
+	if runtime.IsDockerPoolMode() {
+		apiDomain := strings.TrimSpace(viper.GetString("domain.api_domain"))
+		port := viper.GetInt("server.port")
+		if port == 0 {
+			port = 18080
+		}
+
+		var url string
+		if strings.HasPrefix(apiDomain, "http://") || strings.HasPrefix(apiDomain, "https://") {
+			url = strings.TrimRight(apiDomain, "/") + "/proxy/" + slug + "/"
+		} else {
+			if apiDomain == "" {
+				apiDomain = "127.0.0.1"
+			}
+			url = fmt.Sprintf("http://%s:%d/proxy/%s/", apiDomain, port, slug)
+		}
+		return url
+	}
+
 	domain := viper.GetString("domain.bot_domain_suffix")
 	if domain == "" {
 		domain = "fastclaw.ai"
