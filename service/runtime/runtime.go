@@ -2,10 +2,13 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	neturl "net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -191,6 +194,11 @@ func resetPoolEndpoint(endpoint string, endpoints []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	configPatchScript, err := buildDockerPoolGatewayPatchScript()
+	if err != nil {
+		return err
+	}
+
 	cleanupScript := strings.Join([]string{
 		"set -eu",
 		"rm -rf /home/node/.openclaw/agents/*",
@@ -199,6 +207,7 @@ func resetPoolEndpoint(endpoint string, endpoints []string) error {
 		"rm -rf /home/node/.openclaw/cron/*",
 		"if [ -f /home/node/.openclaw/openclaw.json ]; then sed -i -E 's/(\"apiKey\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\\1\\2/g' /home/node/.openclaw/openclaw.json || true; fi",
 		"if [ -f /home/node/.openclaw/.env ]; then sed -i '/^CUSTOM_API_KEY=/d' /home/node/.openclaw/.env || true; fi",
+		"if [ -f /home/node/.openclaw/openclaw.json ]; then " + configPatchScript + "; fi",
 	}, "; ")
 
 	cleanupOutput, cleanupErr := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-lc", cleanupScript).CombinedOutput()
@@ -212,6 +221,75 @@ func resetPoolEndpoint(endpoint string, endpoints []string) error {
 	}
 
 	return nil
+}
+
+func buildDockerPoolGatewayPatchScript() (string, error) {
+	// docker_pool mode needs non-loopback bind so fastclaw-server can reach the gateway.
+	bind := strings.TrimSpace(viper.GetString("docker_pool.gateway_bind"))
+	if bind == "" {
+		bind = "lan"
+	}
+
+	// If a shared gateway token is configured, use token mode; otherwise use none.
+	gatewayToken := strings.TrimSpace(viper.GetString("docker_pool.gateway_token"))
+	authMode := "none"
+	if gatewayToken != "" {
+		authMode = "token"
+	}
+	if mode := strings.TrimSpace(strings.ToLower(viper.GetString("docker_pool.gateway_auth_mode"))); mode == "none" || mode == "token" {
+		authMode = mode
+		if authMode == "token" && gatewayToken == "" {
+			authMode = "none"
+		}
+	}
+
+	allowedOrigins := getDockerPoolAllowedOrigins()
+	allowedOriginsJSON, err := json.Marshal(allowedOrigins)
+	if err != nil {
+		return "", fmt.Errorf("marshal docker pool allowed origins failed: %w", err)
+	}
+
+	nodeScript := fmt.Sprintf(
+		`const fs=require("fs");const p="/home/node/.openclaw/openclaw.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"));}catch(_e){c={};}c.gateway=c.gateway||{};c.gateway.mode="local";c.gateway.bind=%s;c.gateway.controlUi=c.gateway.controlUi||{};c.gateway.controlUi.allowedOrigins=%s;if(%s==="token"){c.gateway.auth=c.gateway.auth||{};c.gateway.auth.mode="token";c.gateway.auth.token=%s;}else{c.gateway.auth={mode:"none"};}fs.writeFileSync(p,JSON.stringify(c,null,2));`,
+		strconv.Quote(bind),
+		string(allowedOriginsJSON),
+		strconv.Quote(authMode),
+		strconv.Quote(gatewayToken),
+	)
+
+	return "node -e " + strconv.Quote(nodeScript), nil
+}
+
+func getDockerPoolAllowedOrigins() []string {
+	if configured := viper.GetStringSlice("docker_pool.allowed_origins"); len(configured) > 0 {
+		return dedupeNonEmpty(configured)
+	}
+
+	origins := []string{"http://localhost:18080", "http://127.0.0.1:18080"}
+	apiDomain := strings.TrimSpace(viper.GetString("bot.api_domain"))
+	if apiDomain != "" {
+		if parsed, err := neturl.Parse(apiDomain); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			origins = append(origins, parsed.Scheme+"://"+parsed.Host)
+		}
+	}
+	return dedupeNonEmpty(origins)
+}
+
+func dedupeNonEmpty(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		v := strings.TrimSpace(item)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 func resolvePoolContainerName(endpoint string, endpoints []string) (string, error) {
