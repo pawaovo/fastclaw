@@ -74,29 +74,35 @@ type portalAIConfigResponse struct {
 }
 
 type portalChannelConfigRequest struct {
-	Provider       string `json:"provider"`
-	Account        string `json:"account"`
-	BotToken       string `json:"botToken"`
-	Token          string `json:"token"`
-	AppID          string `json:"appId"`
-	AppSecret      string `json:"appSecret"`
-	DMPolicy       string `json:"dmPolicy"`
-	GroupPolicy    string `json:"groupPolicy"`
-	RequireMention *bool  `json:"requireMention"`
-	Enabled        *bool  `json:"enabled"`
+	Provider       string   `json:"provider"`
+	Account        string   `json:"account"`
+	BotToken       string   `json:"botToken"`
+	Token          string   `json:"token"`
+	AppID          string   `json:"appId"`
+	AppSecret      string   `json:"appSecret"`
+	DMPolicy       string   `json:"dmPolicy"`
+	GroupPolicy    string   `json:"groupPolicy"`
+	AllowFrom      []string `json:"allowFrom"`
+	RequireMention *bool    `json:"requireMention"`
+	Enabled        *bool    `json:"enabled"`
 }
 
 type portalChannelConfigResponse struct {
-	Provider       string `json:"provider"`
-	Account        string `json:"account,omitempty"`
-	DMPolicy       string `json:"dmPolicy,omitempty"`
-	GroupPolicy    string `json:"groupPolicy,omitempty"`
-	RequireMention bool   `json:"requireMention,omitempty"`
-	Enabled        bool   `json:"enabled"`
-	HasBotToken    bool   `json:"hasBotToken,omitempty"`
-	HasToken       bool   `json:"hasToken,omitempty"`
-	HasAppSecret   bool   `json:"hasAppSecret,omitempty"`
-	AppID          string `json:"appId,omitempty"`
+	Provider       string   `json:"provider"`
+	Account        string   `json:"account,omitempty"`
+	DMPolicy       string   `json:"dmPolicy,omitempty"`
+	GroupPolicy    string   `json:"groupPolicy,omitempty"`
+	AllowFrom      []string `json:"allowFrom,omitempty"`
+	RequireMention bool     `json:"requireMention,omitempty"`
+	Enabled        bool     `json:"enabled"`
+	HasBotToken    bool     `json:"hasBotToken,omitempty"`
+	HasToken       bool     `json:"hasToken,omitempty"`
+	HasAppSecret   bool     `json:"hasAppSecret,omitempty"`
+	AppID          string   `json:"appId,omitempty"`
+}
+
+type portalChannelPairingApproveRequest struct {
+	Code string `json:"code"`
 }
 
 var (
@@ -125,6 +131,7 @@ func RegisterRoutes(e *echo.Echo) {
 	api.PUT("/bots/:id/channels/:channel", upsertBotChannel)
 	api.DELETE("/bots/:id/channels/:channel", deleteBotChannel)
 	api.POST("/bots/:id/channels/:channel/test", testBotChannel)
+	api.POST("/bots/:id/channels/:channel/pairing/approve", approveBotChannelPairing)
 	api.POST("/allocate", allocateBot)
 }
 
@@ -667,6 +674,7 @@ func upsertBotChannel(c echo.Context) error {
 	req.AppSecret = strings.TrimSpace(req.AppSecret)
 	req.DMPolicy = strings.TrimSpace(strings.ToLower(req.DMPolicy))
 	req.GroupPolicy = strings.TrimSpace(strings.ToLower(req.GroupPolicy))
+	req.AllowFrom = normalizeStringList(req.AllowFrom)
 	if req.Account == "" {
 		req.Account = "default"
 	}
@@ -698,6 +706,11 @@ func upsertBotChannel(c echo.Context) error {
 	}
 	channelCfg["dmPolicy"] = req.DMPolicy
 	channelCfg["groupPolicy"] = req.GroupPolicy
+	if len(req.AllowFrom) > 0 {
+		channelCfg["allowFrom"] = req.AllowFrom
+	} else {
+		delete(channelCfg, "allowFrom")
+	}
 	if req.RequireMention != nil {
 		channelCfg["requireMention"] = *req.RequireMention
 	}
@@ -854,6 +867,42 @@ func testBotChannel(c echo.Context) error {
 	})
 }
 
+func approveBotChannelPairing(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+	channel := strings.TrimSpace(strings.ToLower(c.Param("channel")))
+	if channel == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel is required"})
+	}
+	var req portalChannelPairingApproveRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "invalid request body"})
+	}
+	req.Code = strings.TrimSpace(req.Code)
+	if req.Code == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "pairing code is required"})
+	}
+	if bot.Status != model.BotStatusRunning {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "bot is not running"})
+	}
+
+	output, err := runtime.ApproveChannelPairing(context.Background(), bot, channel, req.Code)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to approve pairing: " + err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "pairing approved",
+		"output":  output,
+	})
+}
+
 func runChannelConnectivityTest(channel string, cfg map[string]interface{}, account string) (bool, string, map[string]any) {
 	client := &http.Client{Timeout: 12 * time.Second}
 
@@ -967,6 +1016,29 @@ func toMap(v interface{}) map[string]interface{} {
 	}
 }
 
+func normalizeStringList(input []string) []string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(input))
+	seen := make(map[string]struct{}, len(input))
+	for _, item := range input {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func buildChannelSummaries(channels map[string]interface{}) []portalChannelConfigResponse {
 	out := make([]portalChannelConfigResponse, 0, len(channels))
 	for name, raw := range channels {
@@ -986,6 +1058,7 @@ func summarizeSingleChannel(channel string, cfg map[string]interface{}) *portalC
 		Enabled:     boolFromMap(cfg, "enabled"),
 		DMPolicy:    stringFromMap(cfg, "dmPolicy"),
 		GroupPolicy: stringFromMap(cfg, "groupPolicy"),
+		AllowFrom:   stringSliceFromMap(cfg, "allowFrom"),
 	}
 	if v, ok := cfg["requireMention"].(bool); ok {
 		resp.RequireMention = v
@@ -1021,6 +1094,43 @@ func summarizeSingleChannel(channel string, cfg map[string]interface{}) *portalC
 		}
 	}
 	return resp
+}
+
+func stringSliceFromMap(m map[string]interface{}, key string) []string {
+	if m == nil {
+		return nil
+	}
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	var out []string
+	switch v := raw.(type) {
+	case []interface{}:
+		out = make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+	case []string:
+		out = make([]string, 0, len(v))
+		for _, item := range v {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func stringFromMap(m map[string]interface{}, key string) string {
@@ -1643,8 +1753,13 @@ const portalHTML = `<!doctype html>
               '<div class="field"><label>Feishu App Secret</label><input id="ch-appsecret-' + safeId + '" type="password" placeholder="secret" /></div>' +
             '</div>' +
             '<div class="row">' +
+              '<div class="field"><label>Allowlist Users (comma separated)</label><input id="ch-allowfrom-' + safeId + '" placeholder="5055510476,@alice" /></div>' +
+              '<div class="field"><label>Pairing Code</label><input id="ch-paircode-' + safeId + '" placeholder="47PDJP3D" /></div>' +
+            '</div>' +
+            '<div class="row">' +
               '<button class="primary" onclick="saveChannelConfig(\'' + safeId + '\', \'' + b.id + '\')">Save Channel</button>' +
               '<button onclick="testChannelConfig(\'' + safeId + '\', \'' + b.id + '\')">Test Channel</button>' +
+              '<button onclick="approveChannelPairing(\'' + safeId + '\', \'' + b.id + '\')">Approve Pairing</button>' +
               '<button onclick="removeChannelConfig(\'' + safeId + '\', \'' + b.id + '\')">Remove Channel</button>' +
               '<button onclick="loadChannelsConfig(\'' + safeId + '\', \'' + b.id + '\')">Reload Channels</button>' +
               '<span id="ch-status-' + safeId + '" class="meta"></span>' +
@@ -1830,6 +1945,9 @@ const portalHTML = `<!doctype html>
       setInput('ch-token-' + safeId, '');
       setInput('ch-appid-' + safeId, accountCfg.appId || '');
       setInput('ch-appsecret-' + safeId, '');
+      const allowFrom = Array.isArray(cfg.allowFrom) ? cfg.allowFrom : [];
+      setInput('ch-allowfrom-' + safeId, allowFrom.join(','));
+      setInput('ch-paircode-' + safeId, '');
 
       const summaries = data.summaries || [];
       setChannelsSummary(safeId, summaries);
@@ -1847,6 +1965,7 @@ const portalHTML = `<!doctype html>
         token: getInput('ch-token-' + safeId),
         appId: getInput('ch-appid-' + safeId),
         appSecret: getInput('ch-appsecret-' + safeId),
+        allowFrom: parseCSV(getInput('ch-allowfrom-' + safeId)),
         enabled: true
       };
 
@@ -1863,6 +1982,26 @@ const portalHTML = `<!doctype html>
       setInput('ch-token-' + safeId, '');
       setInput('ch-appsecret-' + safeId, '');
       setChannelStatus(safeId, 'Channel saved');
+      await loadChannelsConfig(safeId, botId);
+    }
+
+    async function approveChannelPairing(safeId, botId) {
+      const provider = getInput('ch-provider-' + safeId) || 'telegram';
+      const code = getInput('ch-paircode-' + safeId);
+      if (!code) {
+        setChannelStatus(safeId, 'Approve failed: pairing code is required');
+        return;
+      }
+      const data = await api('/portal/api/bots/' + botId + '/channels/' + provider + '/pairing/approve', {
+        method: 'POST',
+        body: JSON.stringify({ code })
+      });
+      if (!data.ok) {
+        setChannelStatus(safeId, 'Approve failed: ' + (data.message || 'unknown error'));
+        return;
+      }
+      setInput('ch-paircode-' + safeId, '');
+      setChannelStatus(safeId, 'Pairing approved');
       await loadChannelsConfig(safeId, botId);
     }
 
@@ -1896,6 +2035,14 @@ const portalHTML = `<!doctype html>
       el.textContent = msg || '';
     }
 
+    function parseCSV(input) {
+      if (!input) return [];
+      return input
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+    }
+
     function setChannelsSummary(safeId, summaries) {
       const el = document.getElementById('ch-summary-' + safeId);
       if (!el) return;
@@ -1908,7 +2055,8 @@ const portalHTML = `<!doctype html>
         const enabled = s.enabled ? 'enabled' : 'disabled';
         const dm = s.dmPolicy || '-';
         const gp = s.groupPolicy || '-';
-        return channel + ' [' + enabled + '] dm=' + dm + ' group=' + gp;
+        const allowFrom = Array.isArray(s.allowFrom) && s.allowFrom.length > 0 ? (' allow=' + s.allowFrom.join(',')) : '';
+        return channel + ' [' + enabled + '] dm=' + dm + ' group=' + gp + allowFrom;
       });
       el.textContent = lines.join(' | ');
     }
