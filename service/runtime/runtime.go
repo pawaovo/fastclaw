@@ -50,7 +50,17 @@ func StartBot(ctx context.Context, bot *model.Bot, k8sConfig *k8s.BotConfig) (st
 		if err := ensureRunningLimit(); err != nil {
 			return "", err
 		}
-		return allocatePoolEndpoint(bot.ID)
+		endpoint, err := allocatePoolEndpoint(bot.ID)
+		if err != nil {
+			return "", err
+		}
+		botWithEndpoint := *bot
+		botWithEndpoint.Endpoint = endpoint
+		if err := SyncBotConfigSections(ctx, &botWithEndpoint, "models", "agents"); err != nil {
+			_ = model.ReleaseEndpointLease(bot.ID)
+			return "", err
+		}
+		return endpoint, nil
 	}
 
 	if err := k8s.CreateDeployment(ctx, bot.ID, bot.UserID, bot.AccessToken, k8sConfig); err != nil {

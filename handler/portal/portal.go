@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fastclaw-ai/fastclaw/model"
+	"github.com/fastclaw-ai/fastclaw/service/k8s"
 	"github.com/fastclaw-ai/fastclaw/service/runtime"
 	"github.com/labstack/echo/v4"
 	"github.com/spf13/viper"
@@ -47,6 +48,30 @@ type portalBotResponse struct {
 	Endpoint  string          `json:"endpoint"`
 }
 
+type portalAIConfigRequest struct {
+	Provider      string `json:"provider"`
+	BaseURL       string `json:"baseUrl"`
+	APIKey        string `json:"apiKey"`
+	APIType       string `json:"apiType"`
+	Auth          string `json:"auth"`
+	ModelID       string `json:"modelId"`
+	ModelName     string `json:"modelName"`
+	MaxTokens     int    `json:"maxTokens"`
+	ContextWindow int    `json:"contextWindow"`
+}
+
+type portalAIConfigResponse struct {
+	Provider      string `json:"provider"`
+	BaseURL       string `json:"baseUrl,omitempty"`
+	APIType       string `json:"apiType,omitempty"`
+	Auth          string `json:"auth,omitempty"`
+	ModelID       string `json:"modelId,omitempty"`
+	ModelName     string `json:"modelName,omitempty"`
+	MaxTokens     int    `json:"maxTokens,omitempty"`
+	ContextWindow int    `json:"contextWindow,omitempty"`
+	HasAPIKey     bool   `json:"hasApiKey"`
+}
+
 var (
 	portalAppOnce sync.Once
 	portalAppID   string
@@ -67,6 +92,8 @@ func RegisterRoutes(e *echo.Echo) {
 	api.POST("/bots", createBot)
 	api.POST("/bots/:id/start", startBot)
 	api.POST("/bots/:id/stop", stopBot)
+	api.GET("/bots/:id/ai-config", getBotAIConfig)
+	api.PUT("/bots/:id/ai-config", updateBotAIConfig)
 	api.POST("/allocate", allocateBot)
 }
 
@@ -364,6 +391,195 @@ func stopBot(c echo.Context) error {
 		bot.Endpoint = ""
 	}
 	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bot": toPortalBot(bot)})
+}
+
+func getBotAIConfig(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+
+	resp, err := buildPortalAIConfigResponse(bot, strings.TrimSpace(c.QueryParam("provider")))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to read ai config"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"ok": true, "config": resp})
+}
+
+func updateBotAIConfig(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+
+	var req portalAIConfigRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "invalid request body"})
+	}
+
+	req.Provider = strings.TrimSpace(req.Provider)
+	req.BaseURL = strings.TrimSpace(req.BaseURL)
+	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.APIType = strings.TrimSpace(req.APIType)
+	req.Auth = strings.TrimSpace(req.Auth)
+	req.ModelID = strings.TrimSpace(req.ModelID)
+	req.ModelName = strings.TrimSpace(req.ModelName)
+
+	if req.Provider == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "provider is required"})
+	}
+	if req.ModelID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "modelId is required"})
+	}
+	if req.APIType == "" {
+		req.APIType = "openai-completions"
+	}
+	if req.Auth == "" {
+		req.Auth = "api-key"
+	}
+
+	config, err := bot.GetOpenClawConfig()
+	if err != nil {
+		config = &model.OpenClawConfig{}
+	}
+	if config.Models == nil {
+		config.Models = &model.ModelsConfig{
+			Mode:      "merge",
+			Providers: make(map[string]*model.ProviderConfig),
+		}
+	}
+	if config.Models.Providers == nil {
+		config.Models.Providers = make(map[string]*model.ProviderConfig)
+	}
+
+	provider, ok := config.Models.Providers[req.Provider]
+	if !ok || provider == nil {
+		provider = &model.ProviderConfig{}
+	}
+
+	provider.BaseURL = req.BaseURL
+	provider.API = req.APIType
+	provider.Auth = req.Auth
+	if req.APIKey != "" {
+		provider.APIKey = req.APIKey
+	}
+
+	modelName := req.ModelName
+	if modelName == "" {
+		modelName = req.ModelID
+	}
+	modelCfg := model.ProviderModelConfig{
+		ID:   req.ModelID,
+		Name: modelName,
+	}
+	if req.ContextWindow > 0 {
+		modelCfg.ContextWindow = req.ContextWindow
+	}
+	if req.MaxTokens > 0 {
+		modelCfg.MaxTokens = req.MaxTokens
+	}
+	provider.Models = []model.ProviderModelConfig{modelCfg}
+	config.Models.Providers[req.Provider] = provider
+
+	if config.Agents == nil {
+		config.Agents = &model.AgentsConfig{}
+	}
+	if config.Agents.Defaults == nil {
+		config.Agents.Defaults = &model.AgentDefaultsConfig{}
+	}
+	if config.Agents.Defaults.Model == nil {
+		config.Agents.Defaults.Model = &model.AgentModelConfig{}
+	}
+	config.Agents.Defaults.Model.Primary = req.Provider + "/" + req.ModelID
+
+	if err := bot.SetOpenClawConfig(config); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to persist ai config"})
+	}
+	if err := model.UpdateBot(bot); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to save bot"})
+	}
+
+	if bot.Status == model.BotStatusRunning {
+		if runtime.IsDockerPoolMode() {
+			if err := runtime.SyncBotConfigSections(context.Background(), bot, "models", "agents"); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to apply config to running bot: " + err.Error()})
+			}
+		} else {
+			if err := k8s.SyncSectionsToPod(context.Background(), bot.ID, "models", "agents"); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to sync config to bot"})
+			}
+		}
+	}
+
+	resp, err := buildPortalAIConfigResponse(bot, req.Provider)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to read saved ai config"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"ok": true, "config": resp})
+}
+
+func buildPortalAIConfigResponse(bot *model.Bot, requestedProvider string) (*portalAIConfigResponse, error) {
+	config, err := bot.GetOpenClawConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &portalAIConfigResponse{
+		Provider: "custom",
+		APIType:  "openai-completions",
+		Auth:     "api-key",
+	}
+
+	if config == nil || config.Models == nil || len(config.Models.Providers) == 0 {
+		return resp, nil
+	}
+
+	providerName := requestedProvider
+	if providerName == "" && config.Agents != nil && config.Agents.Defaults != nil && config.Agents.Defaults.Model != nil {
+		primary := strings.TrimSpace(config.Agents.Defaults.Model.Primary)
+		if idx := strings.Index(primary, "/"); idx > 0 {
+			providerName = strings.TrimSpace(primary[:idx])
+		}
+	}
+	if providerName == "" {
+		for k := range config.Models.Providers {
+			providerName = k
+			break
+		}
+	}
+	if providerName == "" {
+		return resp, nil
+	}
+
+	p := config.Models.Providers[providerName]
+	if p == nil {
+		return resp, nil
+	}
+
+	resp.Provider = providerName
+	resp.BaseURL = p.BaseURL
+	if p.API != "" {
+		resp.APIType = p.API
+	}
+	if p.Auth != "" {
+		resp.Auth = p.Auth
+	}
+	resp.HasAPIKey = strings.TrimSpace(p.APIKey) != ""
+	if len(p.Models) > 0 {
+		resp.ModelID = p.Models[0].ID
+		resp.ModelName = p.Models[0].Name
+		resp.MaxTokens = p.Models[0].MaxTokens
+		resp.ContextWindow = p.Models[0].ContextWindow
+	}
+	return resp, nil
 }
 
 func listUserBots(user *model.PortalUser) ([]portalBotResponse, error) {
@@ -749,6 +965,27 @@ const portalHTML = `<!doctype html>
       font-size: 14px;
       min-width: 200px;
     }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 220px;
+    }
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+    .field input {
+      min-width: 0;
+      width: 100%;
+    }
+    .ai-panel {
+      margin-top: 12px;
+      border-top: 1px dashed var(--line);
+      padding-top: 12px;
+    }
     .bots {
       display: grid;
       grid-template-columns: 1fr;
@@ -855,6 +1092,7 @@ const portalHTML = `<!doctype html>
       for (const b of currentBots) {
         const div = document.createElement('div');
         div.className = 'bot';
+        const safeId = b.id.replace(/[^a-zA-Z0-9_-]/g, '');
         div.innerHTML =
           '<h3>' + b.name + '</h3>' +
           '<div class="meta">Status: ' + b.status + ' | Slug: ' + b.slug + '</div>' +
@@ -863,8 +1101,30 @@ const portalHTML = `<!doctype html>
             '<a href="' + b.access_url + '" target="_blank"><button class="primary">Open</button></a>' +
             '<button onclick="startBot(\'' + b.id + '\')">Start</button>' +
             '<button onclick="stopBot(\'' + b.id + '\')">Stop</button>' +
+            '<button onclick="toggleAIConfig(\'' + safeId + '\', \'' + b.id + '\')">AI Config</button>' +
           '</div>' +
-          '<div class="meta">' + b.access_url + '</div>';
+          '<div class="meta">' + b.access_url + '</div>' +
+          '<div id="aiWrap-' + safeId + '" class="ai-panel hidden">' +
+            '<div class="row">' +
+              '<div class="field"><label>Provider</label><input id="ai-provider-' + safeId + '" placeholder="custom / openai / google" /></div>' +
+              '<div class="field"><label>Base URL</label><input id="ai-baseurl-' + safeId + '" placeholder="https://api.openai.com/v1" /></div>' +
+              '<div class="field"><label>API Key</label><input id="ai-apikey-' + safeId + '" type="password" placeholder="sk-..." /></div>' +
+            '</div>' +
+            '<div class="row">' +
+              '<div class="field"><label>Model ID</label><input id="ai-modelid-' + safeId + '" placeholder="gpt-4o-mini" /></div>' +
+              '<div class="field"><label>Model Name</label><input id="ai-modelname-' + safeId + '" placeholder="gpt-4o-mini" /></div>' +
+              '<div class="field"><label>API Type</label><input id="ai-apitype-' + safeId + '" placeholder="openai-completions" /></div>' +
+            '</div>' +
+            '<div class="row">' +
+              '<div class="field"><label>Auth</label><input id="ai-auth-' + safeId + '" placeholder="api-key / bearer" /></div>' +
+              '<div class="field"><label>Max Tokens</label><input id="ai-max-' + safeId + '" type="number" min="0" placeholder="4096" /></div>' +
+              '<div class="field"><label>Context Window</label><input id="ai-context-' + safeId + '" type="number" min="0" placeholder="128000" /></div>' +
+            '</div>' +
+            '<div class="row">' +
+              '<button class="primary" onclick="saveAIConfig(\'' + safeId + '\', \'' + b.id + '\')">Save AI Config</button>' +
+              '<span id="ai-status-' + safeId + '" class="meta"></span>' +
+            '</div>' +
+          '</div>';
         botsEl.appendChild(div);
       }
     }
@@ -939,6 +1199,79 @@ const portalHTML = `<!doctype html>
     async function stopBot(id) {
       await api('/portal/api/bots/' + id + '/stop', { method: 'POST' });
       await refresh();
+    }
+
+    async function toggleAIConfig(safeId, botId) {
+      const wrap = document.getElementById('aiWrap-' + safeId);
+      if (!wrap) return;
+      if (!wrap.classList.contains('hidden')) {
+        wrap.classList.add('hidden');
+        return;
+      }
+      wrap.classList.remove('hidden');
+      await loadAIConfig(safeId, botId);
+    }
+
+    async function loadAIConfig(safeId, botId) {
+      const data = await api('/portal/api/bots/' + botId + '/ai-config');
+      if (!data.ok || !data.config) {
+        setAIStatus(safeId, 'Load failed');
+        return;
+      }
+      const cfg = data.config;
+      setInput('ai-provider-' + safeId, cfg.provider || 'custom');
+      setInput('ai-baseurl-' + safeId, cfg.baseUrl || '');
+      setInput('ai-apikey-' + safeId, '');
+      setInput('ai-modelid-' + safeId, cfg.modelId || '');
+      setInput('ai-modelname-' + safeId, cfg.modelName || '');
+      setInput('ai-apitype-' + safeId, cfg.apiType || 'openai-completions');
+      setInput('ai-auth-' + safeId, cfg.auth || 'api-key');
+      setInput('ai-max-' + safeId, cfg.maxTokens || '');
+      setInput('ai-context-' + safeId, cfg.contextWindow || '');
+      setAIStatus(safeId, cfg.hasApiKey ? 'API Key already set' : 'API Key not set');
+    }
+
+    async function saveAIConfig(safeId, botId) {
+      const payload = {
+        provider: getInput('ai-provider-' + safeId),
+        baseUrl: getInput('ai-baseurl-' + safeId),
+        apiKey: getInput('ai-apikey-' + safeId),
+        modelId: getInput('ai-modelid-' + safeId),
+        modelName: getInput('ai-modelname-' + safeId),
+        apiType: getInput('ai-apitype-' + safeId),
+        auth: getInput('ai-auth-' + safeId),
+        maxTokens: parseInt(getInput('ai-max-' + safeId), 10) || 0,
+        contextWindow: parseInt(getInput('ai-context-' + safeId), 10) || 0
+      };
+      const data = await api('/portal/api/bots/' + botId + '/ai-config', {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+      if (!data.ok) {
+        setAIStatus(safeId, 'Save failed: ' + (data.message || 'unknown error'));
+        return;
+      }
+      setInput('ai-apikey-' + safeId, '');
+      setAIStatus(safeId, 'Saved');
+      await refresh();
+    }
+
+    function getInput(id) {
+      const el = document.getElementById(id);
+      if (!el) return '';
+      return (el.value || '').trim();
+    }
+
+    function setInput(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.value = value == null ? '' : String(value);
+    }
+
+    function setAIStatus(safeId, msg) {
+      const el = document.getElementById('ai-status-' + safeId);
+      if (!el) return;
+      el.textContent = msg;
     }
 
     async function logout() {
