@@ -338,6 +338,15 @@ func resolvePoolContainerName(endpoint string, endpoints []string) (string, erro
 				return name, nil
 			}
 		}
+		// Best effort fallback: use endpoint host as container name
+		// (e.g. "openclaw-2:18789" -> "openclaw-2"), which matches our
+		// docker-pool compose defaults even when container_names is omitted.
+		if host, _, err := net.SplitHostPort(endpoint); err == nil {
+			host = strings.TrimSpace(host)
+			if host != "" {
+				return host, nil
+			}
+		}
 		return fmt.Sprintf("openclaw-pool-%02d", idx+1), nil
 	}
 	return "", fmt.Errorf("endpoint %s not found in docker_pool.endpoints", endpoint)
