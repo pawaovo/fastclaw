@@ -101,3 +101,14 @@ docker compose up -d --build fastclaw
 ```
 
 If you already changed tracked files locally, stash first, then re-apply only necessary settings into `docker-compose.override.yml`.
+
+### Low-memory server rebuild (recommended for 4C8G)
+
+On 4C8G hosts, a direct `docker compose up -d --build fastclaw` can be OOM-killed while compiling.
+Use the helper script below to temporarily stop pool containers, rebuild `fastclaw`, then restore pool containers automatically:
+
+```bash
+cd deploy/docker-pool
+chmod +x rebuild-fastclaw-safe.sh
+./rebuild-fastclaw-safe.sh
+```
