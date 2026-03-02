@@ -477,6 +477,12 @@ func updateBotAIConfig(c echo.Context) error {
 	if req.ModelID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "modelId is required"})
 	}
+	if isOAuthOnlyModel(req.ModelID) && !strings.EqualFold(req.Provider, "openai-codex-oauth") {
+		return c.JSON(http.StatusBadRequest, map[string]any{
+			"ok":      false,
+			"message": "modelId requires codex OAuth provider. Please use a standard API model (e.g. gpt-4o-mini) or switch provider.",
+		})
+	}
 	if req.APIType == "" {
 		req.APIType = "openai-completions"
 	}
@@ -1152,6 +1158,14 @@ func boolFromMap(m map[string]interface{}, key string) bool {
 	}
 	b, _ := v.(bool)
 	return b
+}
+
+func isOAuthOnlyModel(modelID string) bool {
+	m := strings.ToLower(strings.TrimSpace(modelID))
+	if m == "" {
+		return false
+	}
+	return strings.Contains(m, "codex")
 }
 
 func listUserBots(user *model.PortalUser) ([]portalBotResponse, error) {
