@@ -35,6 +35,8 @@ services:
     restart: unless-stopped
     mem_limit: 1400m
     cpus: "0.8"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1152"
     volumes:
       - oc1-data:/home/node/.openclaw
 
@@ -44,6 +46,8 @@ services:
     restart: unless-stopped
     mem_limit: 1400m
     cpus: "0.8"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1152"
     volumes:
       - oc2-data:/home/node/.openclaw
 
@@ -53,6 +57,8 @@ services:
     restart: unless-stopped
     mem_limit: 1400m
     cpus: "0.8"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1152"
     volumes:
       - oc3-data:/home/node/.openclaw
 
@@ -62,6 +68,8 @@ services:
     restart: unless-stopped
     mem_limit: 1400m
     cpus: "0.8"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1152"
     volumes:
       - oc4-data:/home/node/.openclaw
 
