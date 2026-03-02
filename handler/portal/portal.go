@@ -1680,6 +1680,20 @@ const portalHTML = `<!doctype html>
       min-width: 0;
       width: 100%;
     }
+    .secret-inline {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .secret-inline input {
+      flex: 1;
+      min-width: 0;
+    }
+    .secret-inline button {
+      padding: 8px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
     .ai-panel {
       margin-top: 12px;
       border-top: 1px dashed var(--line);
@@ -1813,7 +1827,7 @@ const portalHTML = `<!doctype html>
             '<div class="row">' +
               '<div class="field"><label>Provider</label><input id="ai-provider-' + safeId + '" placeholder="custom / openai / google" /></div>' +
               '<div class="field"><label>Base URL</label><input id="ai-baseurl-' + safeId + '" placeholder="https://api.openai.com/v1" /></div>' +
-              '<div class="field"><label>API Key</label><input id="ai-apikey-' + safeId + '" type="password" placeholder="sk-..." /></div>' +
+              '<div class="field"><label>API Key</label><div class="secret-inline"><input id="ai-apikey-' + safeId + '" type="password" placeholder="sk-..." /><button id="ai-apikey-toggle-' + safeId + '" onclick="toggleSecret(\'ai-apikey-' + safeId + '\', \'ai-apikey-toggle-' + safeId + '\')" type="button">显示</button></div></div>' +
             '</div>' +
             '<div class="row">' +
               '<div class="field"><label>Model ID</label><input id="ai-modelid-' + safeId + '" placeholder="gpt-4o-mini" /></div>' +
@@ -1864,12 +1878,12 @@ const portalHTML = `<!doctype html>
               '</div>' +
             '</div>' +
             '<div class="row">' +
-              '<div class="field"><label>Telegram Bot Token</label><input id="ch-bottoken-' + safeId + '" placeholder="123456:ABC..." /></div>' +
-              '<div class="field"><label>Discord Token</label><input id="ch-token-' + safeId + '" placeholder="discord token" /></div>' +
+              '<div class="field"><label>Telegram Bot Token</label><div class="secret-inline"><input id="ch-bottoken-' + safeId + '" type="password" placeholder="123456:ABC..." /><button id="ch-bottoken-toggle-' + safeId + '" onclick="toggleSecret(\'ch-bottoken-' + safeId + '\', \'ch-bottoken-toggle-' + safeId + '\')" type="button">显示</button></div></div>' +
+              '<div class="field"><label>Discord Token</label><div class="secret-inline"><input id="ch-token-' + safeId + '" type="password" placeholder="discord token" /><button id="ch-token-toggle-' + safeId + '" onclick="toggleSecret(\'ch-token-' + safeId + '\', \'ch-token-toggle-' + safeId + '\')" type="button">显示</button></div></div>' +
             '</div>' +
             '<div class="row">' +
               '<div class="field"><label>Feishu App ID</label><input id="ch-appid-' + safeId + '" placeholder="cli_xxx" /></div>' +
-              '<div class="field"><label>Feishu App Secret</label><input id="ch-appsecret-' + safeId + '" type="password" placeholder="secret" /></div>' +
+              '<div class="field"><label>Feishu App Secret</label><div class="secret-inline"><input id="ch-appsecret-' + safeId + '" type="password" placeholder="secret" /><button id="ch-appsecret-toggle-' + safeId + '" onclick="toggleSecret(\'ch-appsecret-' + safeId + '\', \'ch-appsecret-toggle-' + safeId + '\')" type="button">显示</button></div></div>' +
             '</div>' +
             '<div class="row">' +
               '<div class="field"><label>Allowlist Users (comma separated)</label><input id="ch-allowfrom-' + safeId + '" placeholder="5055510476,@alice" /></div>' +
@@ -2058,6 +2072,15 @@ const portalHTML = `<!doctype html>
       const el = document.getElementById(id);
       if (!el) return;
       el.value = value == null ? '' : String(value);
+    }
+
+    function toggleSecret(inputId, btnId) {
+      const input = document.getElementById(inputId);
+      const btn = document.getElementById(btnId);
+      if (!input || !btn) return;
+      const nextType = input.type === 'password' ? 'text' : 'password';
+      input.type = nextType;
+      btn.textContent = nextType === 'password' ? '显示' : '隐藏';
     }
 
     function setAIStatus(safeId, msg) {
