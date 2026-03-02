@@ -48,6 +48,8 @@ type portalBotResponse struct {
 	Status    model.BotStatus `json:"status"`
 	AccessURL string          `json:"access_url"`
 	Endpoint  string          `json:"endpoint"`
+	Health    string          `json:"health"`
+	Ready     bool            `json:"ready"`
 }
 
 type portalAIConfigRequest struct {
@@ -126,6 +128,7 @@ func RegisterRoutes(e *echo.Echo) {
 	api.POST("/bots", createBot)
 	api.POST("/bots/:id/start", startBot)
 	api.POST("/bots/:id/stop", stopBot)
+	api.GET("/bots/:id/health", getBotHealth)
 	api.GET("/bots/:id/ai-config", getBotAIConfig)
 	api.PUT("/bots/:id/ai-config", updateBotAIConfig)
 	api.GET("/bots/:id/channels", getBotChannels)
@@ -430,6 +433,26 @@ func stopBot(c echo.Context) error {
 		bot.Endpoint = ""
 	}
 	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bot": toPortalBot(bot)})
+}
+
+func getBotHealth(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+
+	health, ready := resolveBotHealth(bot)
+	return c.JSON(http.StatusOK, map[string]any{
+		"ok": true,
+		"health": map[string]any{
+			"status": health,
+			"ready":  ready,
+		},
+	})
 }
 
 func getBotAIConfig(c echo.Context) error {
@@ -1329,6 +1352,7 @@ func getPortalAppID() (string, error) {
 }
 
 func toPortalBot(bot *model.Bot) portalBotResponse {
+	health, ready := resolveBotHealth(bot)
 	return portalBotResponse{
 		ID:        bot.ID,
 		Name:      bot.Name,
@@ -1336,7 +1360,29 @@ func toPortalBot(bot *model.Bot) portalBotResponse {
 		Status:    bot.Status,
 		Endpoint:  bot.Endpoint,
 		AccessURL: buildAccessURL(bot),
+		Health:    health,
+		Ready:     ready,
 	}
+}
+
+func resolveBotHealth(bot *model.Bot) (string, bool) {
+	if bot == nil {
+		return "unknown", false
+	}
+	if bot.Status != model.BotStatusRunning {
+		return "stopped", false
+	}
+	if strings.TrimSpace(bot.Endpoint) == "" {
+		return "no-endpoint", false
+	}
+	ready, err := runtime.GetBotReady(context.Background(), bot)
+	if err != nil {
+		return "error", false
+	}
+	if ready {
+		return "ready", true
+	}
+	return "unreachable", false
 }
 
 func buildAccessURL(bot *model.Bot) string {
@@ -1741,10 +1787,12 @@ const portalHTML = `<!doctype html>
           '<h3>' + b.name + '</h3>' +
           '<div class="meta">Status: ' + b.status + ' | Slug: ' + b.slug + '</div>' +
           '<div class="meta">Endpoint: ' + (b.endpoint || '-') + '</div>' +
+          '<div class="meta">Health: <span id="health-status-' + safeId + '">' + (b.health || 'unknown') + '</span></div>' +
           '<div class="row">' +
             '<a href="' + b.access_url + '" target="_blank"><button class="primary">Open</button></a>' +
             '<button onclick="startBot(\'' + b.id + '\')">Start</button>' +
             '<button onclick="stopBot(\'' + b.id + '\')">Stop</button>' +
+            '<button onclick="checkBotHealth(\'' + safeId + '\', \'' + b.id + '\')">Health</button>' +
             '<button onclick="toggleAIConfig(\'' + safeId + '\', \'' + b.id + '\')">AI Config</button>' +
             '<button onclick="toggleChannelsConfig(\'' + safeId + '\', \'' + b.id + '\')">Channels</button>' +
           '</div>' +
@@ -1899,6 +1947,21 @@ const portalHTML = `<!doctype html>
     async function stopBot(id) {
       await api('/portal/api/bots/' + id + '/stop', { method: 'POST' });
       await refresh();
+    }
+
+    async function checkBotHealth(safeId, botId) {
+      const data = await api('/portal/api/bots/' + botId + '/health');
+      if (!data.ok || !data.health) {
+        setHealthStatus(safeId, 'error');
+        return;
+      }
+      setHealthStatus(safeId, data.health.status || 'unknown');
+    }
+
+    function setHealthStatus(safeId, status) {
+      const el = document.getElementById('health-status-' + safeId);
+      if (!el) return;
+      el.textContent = status || 'unknown';
     }
 
     async function toggleAIConfig(safeId, botId) {
