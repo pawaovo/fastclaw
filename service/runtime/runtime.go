@@ -246,16 +246,44 @@ func buildDockerPoolGatewayPatchScript() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal docker pool allowed origins failed: %w", err)
 	}
+	trustedProxies := getDockerPoolTrustedProxies()
+	trustedProxiesJSON, err := json.Marshal(trustedProxies)
+	if err != nil {
+		return "", fmt.Errorf("marshal docker pool trusted proxies failed: %w", err)
+	}
 
 	nodeScript := fmt.Sprintf(
-		`const fs=require("fs");const p="/home/node/.openclaw/openclaw.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"));}catch(_e){c={};}c.gateway=c.gateway||{};c.gateway.mode="local";c.gateway.bind=%s;c.gateway.controlUi=c.gateway.controlUi||{};c.gateway.controlUi.allowedOrigins=%s;if(%s==="token"){c.gateway.auth=c.gateway.auth||{};c.gateway.auth.mode="token";c.gateway.auth.token=%s;}else{c.gateway.auth={mode:"none"};}fs.writeFileSync(p,JSON.stringify(c,null,2));`,
+		`const fs=require("fs");const p="/home/node/.openclaw/openclaw.json";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"));}catch(_e){c={};}c.gateway=c.gateway||{};c.gateway.mode="local";c.gateway.bind=%s;c.gateway.trustedProxies=%s;c.gateway.controlUi=c.gateway.controlUi||{};c.gateway.controlUi.allowedOrigins=%s;if(%s==="token"){c.gateway.auth=c.gateway.auth||{};c.gateway.auth.mode="token";c.gateway.auth.token=%s;}else{c.gateway.auth={mode:"none"};}fs.writeFileSync(p,JSON.stringify(c,null,2));`,
 		strconv.Quote(bind),
+		string(trustedProxiesJSON),
 		string(allowedOriginsJSON),
 		strconv.Quote(authMode),
 		strconv.Quote(gatewayToken),
 	)
 
 	return "node -e " + strconv.Quote(nodeScript), nil
+}
+
+func getDockerPoolTrustedProxies() []string {
+	configured := viper.GetStringSlice("docker_pool.trusted_proxies")
+	if len(configured) > 0 {
+		out := make([]string, 0, len(configured))
+		for _, item := range configured {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return []string{
+		"127.0.0.1/8",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	}
 }
 
 func DockerPoolGatewayToken() string {
