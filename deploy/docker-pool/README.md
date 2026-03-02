@@ -34,6 +34,38 @@ Services started:
 - `fastclaw-postgres`
 - `openclaw-1..4` (resource-capped)
 
+## One-click deploy (recommended)
+
+Use the built-in script to deploy and set pool size quickly:
+
+```bash
+cd deploy/docker-pool
+chmod +x deploy.sh init-reset.sh rebuild-fastclaw-safe.sh
+./deploy.sh -3
+```
+
+Notes:
+- `-3` means create/start up to 3 OpenClaw pool instances (`openclaw-1..3`).
+- Supported range in current compose: `1-4`.
+- The script auto-generates/updates:
+  - `.env` (`POSTGRES_PASSWORD`)
+  - `config.toml` (`db.password`, `max_running_bots`, `docker_pool.endpoints`, `container_names`)
+- It then starts postgres, selected openclaw instances, rebuilds fastclaw, and verifies `/health`.
+
+### Full initialization reset + deploy
+
+If you want to clear users/bots/allocations/apps and reset runtime state:
+
+```bash
+cd deploy/docker-pool
+./init-reset.sh -3
+```
+
+This will:
+- Reset `fastclaw` database schema (all portal/app/bot/runtime records removed)
+- Clear `/home/node/.openclaw` runtime data in started pool containers
+- Redeploy with the requested pool size
+
 ## 2.1) Keep server-local overrides out of git
 
 Use `docker-compose.override.yml` for machine-specific tweaks (ports, limits, bind mounts, etc.).

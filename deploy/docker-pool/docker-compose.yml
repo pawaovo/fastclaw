@@ -18,10 +18,6 @@ services:
     restart: unless-stopped
     depends_on:
       - postgres
-      - openclaw-1
-      - openclaw-2
-      - openclaw-3
-      - openclaw-4
     ports:
       - "18080:18080"
     environment:
