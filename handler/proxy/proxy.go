@@ -298,9 +298,10 @@ func patchControlUIConfig(body []byte, scheme, host, botPathID, token string) []
 // buildWSRequestHeaders builds the headers for the backend WebSocket connection
 func buildWSRequestHeaders(c echo.Context, targetHost string) http.Header {
 	requestHeader := http.Header{}
-	// Set Origin to the target host to pass OpenClaw's origin check
-	// OpenClaw doesn't support wildcard "*" in allowedOrigins
-	requestHeader.Set("Origin", fmt.Sprintf("http://%s", targetHost))
+	// Keep websocket Origin aligned with the portal/proxy origin.
+	// This avoids docker_pool mode origin mismatches when backend endpoint
+	// is an internal host like openclaw-3:18789.
+	requestHeader.Set("Origin", fmt.Sprintf("%s://%s", c.Scheme(), c.Request().Host))
 	if protocol := c.Request().Header.Get("Sec-WebSocket-Protocol"); protocol != "" {
 		requestHeader.Set("Sec-WebSocket-Protocol", protocol)
 	}
