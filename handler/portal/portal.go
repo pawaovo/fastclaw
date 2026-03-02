@@ -109,6 +109,15 @@ type portalChannelPairingApproveRequest struct {
 	Code string `json:"code"`
 }
 
+type portalPoolStatusResponse struct {
+	Mode       string `json:"mode"`
+	Total      int    `json:"total"`
+	Active     int    `json:"active"`
+	Free       int    `json:"free"`
+	Full       bool   `json:"full"`
+	MaxRunning int    `json:"maxRunning"`
+}
+
 var (
 	portalAppOnce sync.Once
 	portalAppID   string
@@ -126,6 +135,7 @@ func RegisterRoutes(e *echo.Echo) {
 	api := e.Group("/portal/api")
 	api.GET("/me", me)
 	api.GET("/bots", listBots)
+	api.GET("/pool", getPoolStatus)
 	api.POST("/bots", createBot)
 	api.POST("/bots/:id/start", startBot)
 	api.POST("/bots/:id/stop", stopBot)
@@ -320,6 +330,7 @@ func me(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to list bots"})
 	}
+	pool := buildPoolStatus()
 	return c.JSON(http.StatusOK, map[string]any{
 		"ok": true,
 		"user": map[string]any{
@@ -329,6 +340,7 @@ func me(c echo.Context) error {
 			"avatar_url": user.AvatarURL,
 		},
 		"bots": bots,
+		"pool": pool,
 	})
 }
 
@@ -341,7 +353,14 @@ func listBots(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to list bots"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bots": bots})
+	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bots": bots, "pool": buildPoolStatus()})
+}
+
+func getPoolStatus(c echo.Context) error {
+	if _, err := mustSessionUser(c); err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"ok": true, "pool": buildPoolStatus()})
 }
 
 func allocateBot(c echo.Context) error {
@@ -351,6 +370,9 @@ func allocateBot(c echo.Context) error {
 	}
 	bot, err := ensureUserBotRunning(user)
 	if err != nil {
+		if isPoolExhaustedError(err) {
+			return c.JSON(http.StatusConflict, map[string]any{"ok": false, "message": "资源池已满，请稍后重试（当前无可用 OpenClaw 实例）", "pool": buildPoolStatus()})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bot": toPortalBot(bot)})
@@ -369,6 +391,9 @@ func createBot(c echo.Context) error {
 	// Portal policy: one OpenClaw instance per user.
 	bot, err := ensureUserBotRunning(user)
 	if err != nil {
+		if isPoolExhaustedError(err) {
+			return c.JSON(http.StatusConflict, map[string]any{"ok": false, "message": "资源池已满，请稍后重试（当前无可用 OpenClaw 实例）", "pool": buildPoolStatus()})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to ensure dedicated bot: " + err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bot": toPortalBot(bot)})
@@ -386,6 +411,9 @@ func startBot(c echo.Context) error {
 	if bot.Status != model.BotStatusRunning {
 		endpoint, err := runtime.StartBot(context.Background(), bot, nil)
 		if err != nil {
+			if isPoolExhaustedError(err) {
+				return c.JSON(http.StatusConflict, map[string]any{"ok": false, "message": "资源池已满，请稍后重试（当前无可用 OpenClaw 实例）", "pool": buildPoolStatus()})
+			}
 			return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to start bot: " + err.Error()})
 		}
 		if err := model.UpdateBotStatus(bot.ID, model.BotStatusRunning, endpoint); err != nil {
@@ -396,6 +424,47 @@ func startBot(c echo.Context) error {
 		bot.Endpoint = endpoint
 	}
 	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bot": toPortalBot(bot)})
+}
+
+func isPoolExhaustedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "no free docker pool endpoint") ||
+		strings.Contains(msg, "max running bots limit reached")
+}
+
+func buildPoolStatus() *portalPoolStatusResponse {
+	mode := strings.TrimSpace(viper.GetString("runtime.mode"))
+	maxRunning := viper.GetInt("runtime.max_running_bots")
+	if maxRunning < 0 {
+		maxRunning = 0
+	}
+
+	total := 0
+	for _, ep := range viper.GetStringSlice("docker_pool.endpoints") {
+		if strings.TrimSpace(ep) != "" {
+			total++
+		}
+	}
+	active := 0
+	if c, err := model.CountActiveEndpointLeases(); err == nil {
+		active = int(c)
+	}
+	free := total - active
+	if free < 0 {
+		free = 0
+	}
+
+	return &portalPoolStatusResponse{
+		Mode:       mode,
+		Total:      total,
+		Active:     active,
+		Free:       free,
+		Full:       total > 0 && active >= total,
+		MaxRunning: maxRunning,
+	}
 }
 
 func stopBot(c echo.Context) error {
@@ -1749,8 +1818,10 @@ const portalHTML = `<!doctype html>
       </div>
       <div id="userArea" class="hidden">
         <div class="row" id="userInfo"></div>
+        <div class="meta" id="poolInfo"></div>
+        <div class="meta" id="userHint"></div>
         <div class="row">
-          <button class="primary" onclick="createBot()">新增专属实例</button>
+          <button id="createBotBtn" class="primary" onclick="createBot()">新增专属实例</button>
           <button onclick="refresh()">刷新</button>
           <button class="danger" onclick="logout()">退出登录</button>
         </div>
@@ -1767,6 +1838,7 @@ const portalHTML = `<!doctype html>
   <script>
     let currentUser = null;
     let currentBots = [];
+    let currentPool = null;
 
     async function api(url, options = {}) {
       const res = await fetch(url, {
@@ -1789,6 +1861,9 @@ const portalHTML = `<!doctype html>
       const userArea = document.getElementById('userArea');
       const manageCard = document.getElementById('manageCard');
       const userInfo = document.getElementById('userInfo');
+      const poolInfo = document.getElementById('poolInfo');
+      const userHint = document.getElementById('userHint');
+      const createBotBtn = document.getElementById('createBotBtn');
       const botsEl = document.getElementById('bots');
 
       if (!currentUser) {
@@ -1802,6 +1877,22 @@ const portalHTML = `<!doctype html>
       userArea.classList.remove('hidden');
       manageCard.classList.remove('hidden');
       userInfo.innerHTML = '<strong>' + (currentUser.name || 'User') + '</strong><span style="color:#6b7280">' + currentUser.email + '</span>';
+
+      if (currentPool && currentPool.mode === 'docker_pool' && currentPool.total > 0) {
+        poolInfo.textContent = '资源池：' + currentPool.active + '/' + currentPool.total + ' 已占用，剩余 ' + currentPool.free + '；max_running_bots=' + currentPool.maxRunning;
+      } else {
+        poolInfo.textContent = '';
+      }
+      const poolFull = !!(currentPool && currentPool.full);
+      if (createBotBtn) {
+        createBotBtn.disabled = poolFull && (!Array.isArray(currentBots) || currentBots.length === 0);
+      }
+      if (poolFull && (!Array.isArray(currentBots) || currentBots.length === 0)) {
+        userHint.textContent = '当前资源池已满，暂时无法为新用户分配实例，请稍后重试。';
+        userHint.style.color = '#8f1d1d';
+      } else {
+        userHint.textContent = '';
+      }
 
       botsEl.innerHTML = '';
       for (const b of currentBots) {
@@ -1909,13 +2000,16 @@ const portalHTML = `<!doctype html>
         if (!data.ok) {
           currentUser = null;
           currentBots = [];
+          currentPool = null;
         } else {
           currentUser = data.user;
           currentBots = data.bots || [];
+          currentPool = data.pool || null;
         }
       } catch (e) {
         currentUser = null;
         currentBots = [];
+        currentPool = null;
       }
       render();
     }
@@ -1956,7 +2050,9 @@ const portalHTML = `<!doctype html>
     async function createBot() {
       const data = await api('/portal/api/bots', { method: 'POST', body: JSON.stringify({}) });
       if (!data.ok) {
+        if (data.pool) currentPool = data.pool;
         alert(data.message || 'Create failed');
+        render();
         return;
       }
       await refresh();

@@ -98,3 +98,12 @@ func ReleaseEndpointLease(botID string) error {
 			"updated_at":  now,
 		}).Error
 }
+
+func CountActiveEndpointLeases() (int64, error) {
+	var count int64
+	err := util.GetDB().
+		Model(&RuntimeAllocation{}).
+		Where("released_at IS NULL").
+		Count(&count).Error
+	return count, err
+}
