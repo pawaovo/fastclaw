@@ -210,7 +210,9 @@ func resetPoolEndpoint(endpoint string, endpoints []string) error {
 		"rm -rf /home/node/.openclaw/cron/*",
 		"if [ -f /home/node/.openclaw/openclaw.json ]; then sed -i -E 's/(\"apiKey\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\\1\\2/g' /home/node/.openclaw/openclaw.json || true; fi",
 		"if [ -f /home/node/.openclaw/.env ]; then sed -i '/^CUSTOM_API_KEY=/d' /home/node/.openclaw/.env || true; fi",
-		"if [ -f /home/node/.openclaw/openclaw.json ]; then " + configPatchScript + "; fi",
+		// Fresh docker volumes may not have openclaw.json yet; always generate/patch it.
+		"mkdir -p /home/node/.openclaw",
+		configPatchScript,
 		"chown -R node:node /home/node/.openclaw || true",
 	}, "; ")
 
