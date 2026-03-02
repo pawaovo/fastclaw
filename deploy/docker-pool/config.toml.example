@@ -20,6 +20,8 @@ max_running_bots = 2
 
 [docker_pool]
 endpoints = ["openclaw-1:18789", "openclaw-2:18789", "openclaw-3:18789", "openclaw-4:18789"]
+# Explicit container names used by reset/sync commands executed via docker CLI.
+container_names = ["openclaw-1", "openclaw-2", "openclaw-3", "openclaw-4"]
 # Optional: shared OpenClaw gateway token for pre-provisioned pool instances.
 # Required when pool OpenClaw uses gateway.auth.mode = "token".
 gateway_token = ""

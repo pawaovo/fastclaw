@@ -26,6 +26,7 @@ services:
       - "18080:18080"
     volumes:
       - ./config.toml:/app/config.toml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     command: ["./fastclaw", "server", "-c", "/app/config.toml"]
 
   openclaw-1:
