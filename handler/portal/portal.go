@@ -72,6 +72,32 @@ type portalAIConfigResponse struct {
 	HasAPIKey     bool   `json:"hasApiKey"`
 }
 
+type portalChannelConfigRequest struct {
+	Provider       string `json:"provider"`
+	Account        string `json:"account"`
+	BotToken       string `json:"botToken"`
+	Token          string `json:"token"`
+	AppID          string `json:"appId"`
+	AppSecret      string `json:"appSecret"`
+	DMPolicy       string `json:"dmPolicy"`
+	GroupPolicy    string `json:"groupPolicy"`
+	RequireMention *bool  `json:"requireMention"`
+	Enabled        *bool  `json:"enabled"`
+}
+
+type portalChannelConfigResponse struct {
+	Provider       string `json:"provider"`
+	Account        string `json:"account,omitempty"`
+	DMPolicy       string `json:"dmPolicy,omitempty"`
+	GroupPolicy    string `json:"groupPolicy,omitempty"`
+	RequireMention bool   `json:"requireMention,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	HasBotToken    bool   `json:"hasBotToken,omitempty"`
+	HasToken       bool   `json:"hasToken,omitempty"`
+	HasAppSecret   bool   `json:"hasAppSecret,omitempty"`
+	AppID          string `json:"appId,omitempty"`
+}
+
 var (
 	portalAppOnce sync.Once
 	portalAppID   string
@@ -94,6 +120,9 @@ func RegisterRoutes(e *echo.Echo) {
 	api.POST("/bots/:id/stop", stopBot)
 	api.GET("/bots/:id/ai-config", getBotAIConfig)
 	api.PUT("/bots/:id/ai-config", updateBotAIConfig)
+	api.GET("/bots/:id/channels", getBotChannels)
+	api.PUT("/bots/:id/channels/:channel", upsertBotChannel)
+	api.DELETE("/bots/:id/channels/:channel", deleteBotChannel)
 	api.POST("/allocate", allocateBot)
 }
 
@@ -582,6 +611,296 @@ func buildPortalAIConfigResponse(bot *model.Bot, requestedProvider string) (*por
 	return resp, nil
 }
 
+func getBotChannels(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+
+	config, err := bot.GetOpenClawConfig()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to read bot config"})
+	}
+	channels := map[string]interface{}{}
+	if config != nil && config.Channels != nil {
+		channels = map[string]interface{}(config.Channels)
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"ok":        true,
+		"channels":  channels,
+		"summaries": buildChannelSummaries(channels),
+	})
+}
+
+func upsertBotChannel(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+
+	channel := strings.TrimSpace(strings.ToLower(c.Param("channel")))
+	if channel == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel is required"})
+	}
+
+	var req portalChannelConfigRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "invalid request body"})
+	}
+
+	req.Provider = strings.TrimSpace(strings.ToLower(req.Provider))
+	req.Account = strings.TrimSpace(req.Account)
+	req.BotToken = strings.TrimSpace(req.BotToken)
+	req.Token = strings.TrimSpace(req.Token)
+	req.AppID = strings.TrimSpace(req.AppID)
+	req.AppSecret = strings.TrimSpace(req.AppSecret)
+	req.DMPolicy = strings.TrimSpace(strings.ToLower(req.DMPolicy))
+	req.GroupPolicy = strings.TrimSpace(strings.ToLower(req.GroupPolicy))
+	if req.Account == "" {
+		req.Account = "default"
+	}
+	if req.Provider != "" && req.Provider != channel {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "provider does not match channel"})
+	}
+	if req.DMPolicy == "" {
+		req.DMPolicy = "pairing"
+	}
+	if req.GroupPolicy == "" {
+		req.GroupPolicy = "open"
+	}
+
+	config, err := bot.GetOpenClawConfig()
+	if err != nil {
+		config = &model.OpenClawConfig{}
+	}
+	if config.Channels == nil {
+		config.Channels = model.ChannelsConfig{}
+	}
+	channels := map[string]interface{}(config.Channels)
+	channelCfg := toMap(channels[channel])
+	if channelCfg == nil {
+		channelCfg = map[string]interface{}{}
+	}
+	channelCfg["enabled"] = true
+	if req.Enabled != nil {
+		channelCfg["enabled"] = *req.Enabled
+	}
+	channelCfg["dmPolicy"] = req.DMPolicy
+	channelCfg["groupPolicy"] = req.GroupPolicy
+	if req.RequireMention != nil {
+		channelCfg["requireMention"] = *req.RequireMention
+	}
+
+	switch channel {
+	case "telegram":
+		if req.BotToken != "" {
+			channelCfg["botToken"] = req.BotToken
+		}
+	case "discord":
+		if req.Token != "" {
+			channelCfg["token"] = req.Token
+		}
+	case "feishu":
+		accounts := toMap(channelCfg["accounts"])
+		if accounts == nil {
+			accounts = map[string]interface{}{}
+		}
+		accountCfg := toMap(accounts[req.Account])
+		if accountCfg == nil {
+			accountCfg = map[string]interface{}{}
+		}
+		if req.AppID != "" {
+			accountCfg["appId"] = req.AppID
+		}
+		if req.AppSecret != "" {
+			accountCfg["appSecret"] = req.AppSecret
+		}
+		accountCfg["enabled"] = true
+		accountCfg["dmPolicy"] = req.DMPolicy
+		accountCfg["groupPolicy"] = req.GroupPolicy
+		accounts[req.Account] = accountCfg
+		channelCfg["accounts"] = accounts
+	case "whatsapp":
+		// WhatsApp often requires QR/device login. Here we persist policy defaults.
+	default:
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "unsupported channel: " + channel})
+	}
+
+	channels[channel] = channelCfg
+	config.Channels = model.ChannelsConfig(channels)
+
+	if err := bot.SetOpenClawConfig(config); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to persist channel config"})
+	}
+	if err := model.UpdateBot(bot); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to save bot"})
+	}
+
+	if bot.Status == model.BotStatusRunning {
+		if runtime.IsDockerPoolMode() {
+			if err := runtime.SyncBotConfigSections(context.Background(), bot, "channels"); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to apply channel config: " + err.Error()})
+			}
+		} else {
+			if err := k8s.SyncSectionsToPod(context.Background(), bot.ID, "channels"); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to sync channel config"})
+			}
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"ok":      true,
+		"channel": channelCfg,
+		"summary": summarizeSingleChannel(channel, channelCfg),
+	})
+}
+
+func deleteBotChannel(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+	channel := strings.TrimSpace(strings.ToLower(c.Param("channel")))
+	if channel == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel is required"})
+	}
+
+	config, err := bot.GetOpenClawConfig()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to read bot config"})
+	}
+	if config == nil || config.Channels == nil {
+		return c.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+
+	channels := map[string]interface{}(config.Channels)
+	delete(channels, channel)
+	config.Channels = model.ChannelsConfig(channels)
+
+	if err := bot.SetOpenClawConfig(config); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to update channel config"})
+	}
+	if err := model.UpdateBot(bot); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to save bot"})
+	}
+
+	if bot.Status == model.BotStatusRunning {
+		if runtime.IsDockerPoolMode() {
+			if err := runtime.SyncBotConfigSections(context.Background(), bot, "channels"); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to apply channel config: " + err.Error()})
+			}
+		} else {
+			if err := k8s.SyncSectionsToPod(context.Background(), bot.ID, "channels"); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to sync channel config"})
+			}
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+func toMap(v interface{}) map[string]interface{} {
+	if v == nil {
+		return nil
+	}
+	switch m := v.(type) {
+	case map[string]interface{}:
+		return m
+	default:
+		return nil
+	}
+}
+
+func buildChannelSummaries(channels map[string]interface{}) []portalChannelConfigResponse {
+	out := make([]portalChannelConfigResponse, 0, len(channels))
+	for name, raw := range channels {
+		if cfg := summarizeSingleChannel(name, toMap(raw)); cfg != nil {
+			out = append(out, *cfg)
+		}
+	}
+	return out
+}
+
+func summarizeSingleChannel(channel string, cfg map[string]interface{}) *portalChannelConfigResponse {
+	if cfg == nil {
+		return nil
+	}
+	resp := &portalChannelConfigResponse{
+		Provider:    channel,
+		Enabled:     boolFromMap(cfg, "enabled"),
+		DMPolicy:    stringFromMap(cfg, "dmPolicy"),
+		GroupPolicy: stringFromMap(cfg, "groupPolicy"),
+	}
+	if v, ok := cfg["requireMention"].(bool); ok {
+		resp.RequireMention = v
+	}
+	if token := stringFromMap(cfg, "botToken"); token != "" {
+		resp.HasBotToken = true
+	}
+	if token := stringFromMap(cfg, "token"); token != "" {
+		resp.HasToken = true
+	}
+
+	accounts := toMap(cfg["accounts"])
+	if len(accounts) > 0 {
+		for accountName, raw := range accounts {
+			acc := toMap(raw)
+			if acc == nil {
+				continue
+			}
+			resp.Account = accountName
+			if appID := stringFromMap(acc, "appId"); appID != "" {
+				resp.AppID = appID
+			}
+			if appSecret := stringFromMap(acc, "appSecret"); appSecret != "" {
+				resp.HasAppSecret = true
+			}
+			if dm := stringFromMap(acc, "dmPolicy"); dm != "" {
+				resp.DMPolicy = dm
+			}
+			if gp := stringFromMap(acc, "groupPolicy"); gp != "" {
+				resp.GroupPolicy = gp
+			}
+			break
+		}
+	}
+	return resp
+}
+
+func stringFromMap(m map[string]interface{}, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, _ := m[key]
+	s, _ := v.(string)
+	return strings.TrimSpace(s)
+}
+
+func boolFromMap(m map[string]interface{}, key string) bool {
+	if m == nil {
+		return false
+	}
+	v, ok := m[key]
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
+}
+
 func listUserBots(user *model.PortalUser) ([]portalBotResponse, error) {
 	appID, err := getPortalAppID()
 	if err != nil {
@@ -965,6 +1284,14 @@ const portalHTML = `<!doctype html>
       font-size: 14px;
       min-width: 200px;
     }
+    select {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
+      min-width: 200px;
+      background: #fff;
+    }
     .field {
       display: flex;
       flex-direction: column;
@@ -982,6 +1309,11 @@ const portalHTML = `<!doctype html>
       width: 100%;
     }
     .ai-panel {
+      margin-top: 12px;
+      border-top: 1px dashed var(--line);
+      padding-top: 12px;
+    }
+    .channels-panel {
       margin-top: 12px;
       border-top: 1px dashed var(--line);
       padding-top: 12px;
@@ -1102,6 +1434,7 @@ const portalHTML = `<!doctype html>
             '<button onclick="startBot(\'' + b.id + '\')">Start</button>' +
             '<button onclick="stopBot(\'' + b.id + '\')">Stop</button>' +
             '<button onclick="toggleAIConfig(\'' + safeId + '\', \'' + b.id + '\')">AI Config</button>' +
+            '<button onclick="toggleChannelsConfig(\'' + safeId + '\', \'' + b.id + '\')">Channels</button>' +
           '</div>' +
           '<div class="meta">' + b.access_url + '</div>' +
           '<div id="aiWrap-' + safeId + '" class="ai-panel hidden">' +
@@ -1124,6 +1457,55 @@ const portalHTML = `<!doctype html>
               '<button class="primary" onclick="saveAIConfig(\'' + safeId + '\', \'' + b.id + '\')">Save AI Config</button>' +
               '<span id="ai-status-' + safeId + '" class="meta"></span>' +
             '</div>' +
+          '</div>' +
+          '<div id="chWrap-' + safeId + '" class="channels-panel hidden">' +
+            '<div class="row">' +
+              '<div class="field">' +
+                '<label>Channel</label>' +
+                '<select id="ch-provider-' + safeId + '">' +
+                  '<option value="telegram">telegram</option>' +
+                  '<option value="discord">discord</option>' +
+                  '<option value="feishu">feishu</option>' +
+                  '<option value="whatsapp">whatsapp</option>' +
+                '</select>' +
+              '</div>' +
+              '<div class="field">' +
+                '<label>Account</label>' +
+                '<input id="ch-account-' + safeId + '" value="default" />' +
+              '</div>' +
+              '<div class="field">' +
+                '<label>DM Policy</label>' +
+                '<select id="ch-dm-' + safeId + '">' +
+                  '<option value="pairing">pairing</option>' +
+                  '<option value="open">open</option>' +
+                  '<option value="allowlist">allowlist</option>' +
+                  '<option value="disabled">disabled</option>' +
+                '</select>' +
+              '</div>' +
+              '<div class="field">' +
+                '<label>Group Policy</label>' +
+                '<select id="ch-group-' + safeId + '">' +
+                  '<option value="open">open</option>' +
+                  '<option value="allowlist">allowlist</option>' +
+                  '<option value="disabled">disabled</option>' +
+                '</select>' +
+              '</div>' +
+            '</div>' +
+            '<div class="row">' +
+              '<div class="field"><label>Telegram Bot Token</label><input id="ch-bottoken-' + safeId + '" placeholder="123456:ABC..." /></div>' +
+              '<div class="field"><label>Discord Token</label><input id="ch-token-' + safeId + '" placeholder="discord token" /></div>' +
+            '</div>' +
+            '<div class="row">' +
+              '<div class="field"><label>Feishu App ID</label><input id="ch-appid-' + safeId + '" placeholder="cli_xxx" /></div>' +
+              '<div class="field"><label>Feishu App Secret</label><input id="ch-appsecret-' + safeId + '" type="password" placeholder="secret" /></div>' +
+            '</div>' +
+            '<div class="row">' +
+              '<button class="primary" onclick="saveChannelConfig(\'' + safeId + '\', \'' + b.id + '\')">Save Channel</button>' +
+              '<button onclick="removeChannelConfig(\'' + safeId + '\', \'' + b.id + '\')">Remove Channel</button>' +
+              '<button onclick="loadChannelsConfig(\'' + safeId + '\', \'' + b.id + '\')">Reload Channels</button>' +
+              '<span id="ch-status-' + safeId + '" class="meta"></span>' +
+            '</div>' +
+            '<div id="ch-summary-' + safeId + '" class="meta"></div>' +
           '</div>';
         botsEl.appendChild(div);
       }
@@ -1272,6 +1654,106 @@ const portalHTML = `<!doctype html>
       const el = document.getElementById('ai-status-' + safeId);
       if (!el) return;
       el.textContent = msg;
+    }
+
+    async function toggleChannelsConfig(safeId, botId) {
+      const wrap = document.getElementById('chWrap-' + safeId);
+      if (!wrap) return;
+      if (!wrap.classList.contains('hidden')) {
+        wrap.classList.add('hidden');
+        return;
+      }
+      wrap.classList.remove('hidden');
+      await loadChannelsConfig(safeId, botId);
+    }
+
+    async function loadChannelsConfig(safeId, botId) {
+      const data = await api('/portal/api/bots/' + botId + '/channels');
+      if (!data.ok) {
+        setChannelStatus(safeId, 'Load failed: ' + (data.message || 'unknown error'));
+        return;
+      }
+
+      const provider = getInput('ch-provider-' + safeId) || 'telegram';
+      const channels = data.channels || {};
+      const cfg = channels[provider] || {};
+      const account = getInput('ch-account-' + safeId) || 'default';
+      const accountCfg = cfg.accounts && cfg.accounts[account] ? cfg.accounts[account] : {};
+
+      setInput('ch-dm-' + safeId, (cfg.dmPolicy || accountCfg.dmPolicy || 'pairing'));
+      setInput('ch-group-' + safeId, (cfg.groupPolicy || accountCfg.groupPolicy || 'open'));
+      setInput('ch-bottoken-' + safeId, '');
+      setInput('ch-token-' + safeId, '');
+      setInput('ch-appid-' + safeId, accountCfg.appId || '');
+      setInput('ch-appsecret-' + safeId, '');
+
+      const summaries = data.summaries || [];
+      setChannelsSummary(safeId, summaries);
+      setChannelStatus(safeId, 'Loaded');
+    }
+
+    async function saveChannelConfig(safeId, botId) {
+      const provider = getInput('ch-provider-' + safeId) || 'telegram';
+      const payload = {
+        provider,
+        account: getInput('ch-account-' + safeId) || 'default',
+        dmPolicy: getInput('ch-dm-' + safeId) || 'pairing',
+        groupPolicy: getInput('ch-group-' + safeId) || 'open',
+        botToken: getInput('ch-bottoken-' + safeId),
+        token: getInput('ch-token-' + safeId),
+        appId: getInput('ch-appid-' + safeId),
+        appSecret: getInput('ch-appsecret-' + safeId),
+        enabled: true
+      };
+
+      const data = await api('/portal/api/bots/' + botId + '/channels/' + provider, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+      if (!data.ok) {
+        setChannelStatus(safeId, 'Save failed: ' + (data.message || 'unknown error'));
+        return;
+      }
+
+      setInput('ch-bottoken-' + safeId, '');
+      setInput('ch-token-' + safeId, '');
+      setInput('ch-appsecret-' + safeId, '');
+      setChannelStatus(safeId, 'Channel saved');
+      await loadChannelsConfig(safeId, botId);
+    }
+
+    async function removeChannelConfig(safeId, botId) {
+      const provider = getInput('ch-provider-' + safeId) || 'telegram';
+      const data = await api('/portal/api/bots/' + botId + '/channels/' + provider, { method: 'DELETE' });
+      if (!data.ok) {
+        setChannelStatus(safeId, 'Remove failed: ' + (data.message || 'unknown error'));
+        return;
+      }
+      setChannelStatus(safeId, 'Channel removed');
+      await loadChannelsConfig(safeId, botId);
+    }
+
+    function setChannelStatus(safeId, msg) {
+      const el = document.getElementById('ch-status-' + safeId);
+      if (!el) return;
+      el.textContent = msg || '';
+    }
+
+    function setChannelsSummary(safeId, summaries) {
+      const el = document.getElementById('ch-summary-' + safeId);
+      if (!el) return;
+      if (!Array.isArray(summaries) || summaries.length === 0) {
+        el.textContent = 'No channel configured';
+        return;
+      }
+      const lines = summaries.map((s) => {
+        const channel = s.provider || 'unknown';
+        const enabled = s.enabled ? 'enabled' : 'disabled';
+        const dm = s.dmPolicy || '-';
+        const gp = s.groupPolicy || '-';
+        return channel + ' [' + enabled + '] dm=' + dm + ' group=' + gp;
+      });
+      el.textContent = lines.join(' | ');
     }
 
     async function logout() {
