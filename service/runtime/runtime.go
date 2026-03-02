@@ -208,6 +208,7 @@ func resetPoolEndpoint(endpoint string, endpoints []string) error {
 		"if [ -f /home/node/.openclaw/openclaw.json ]; then sed -i -E 's/(\"apiKey\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\\1\\2/g' /home/node/.openclaw/openclaw.json || true; fi",
 		"if [ -f /home/node/.openclaw/.env ]; then sed -i '/^CUSTOM_API_KEY=/d' /home/node/.openclaw/.env || true; fi",
 		"if [ -f /home/node/.openclaw/openclaw.json ]; then " + configPatchScript + "; fi",
+		"chown -R node:node /home/node/.openclaw || true",
 	}, "; ")
 
 	cleanupOutput, cleanupErr := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-lc", cleanupScript).CombinedOutput()
