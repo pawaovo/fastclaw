@@ -29,6 +29,8 @@ gateway_token = ""
 health_check_interval_seconds = 20
 # Consecutive failed checks before auto recovery is triggered.
 health_fail_threshold = 3
+# Grace window after start/recover during which guard skips health demotion.
+health_startup_grace_seconds = 120
 
 [domain]
 # for access_url returned by create bot

@@ -364,26 +364,10 @@ func createBot(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
 	}
 
-	var req createBotRequest
-	_ = c.Bind(&req)
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		name = fmt.Sprintf("%s's Bot", strings.TrimSpace(user.Name))
-	}
-
-	appID, err := getPortalAppID()
+	// Portal policy: one OpenClaw instance per user.
+	bot, err := ensureUserBotRunning(user)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to get portal app"})
-	}
-
-	bot := &model.Bot{
-		AppID:  appID,
-		UserID: user.ID,
-		Name:   name,
-		Status: model.BotStatusCreated,
-	}
-	if err := model.CreateBot(bot); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to create bot"})
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to ensure dedicated bot: " + err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bot": toPortalBot(bot)})
 }
@@ -1705,7 +1689,7 @@ const portalHTML = `<!doctype html>
   <div class="wrap">
     <div class="card">
       <h1>FastClaw Portal</h1>
-      <p class="sub">支持邮箱注册/登录（无域名可用）与 Google 登录（可选）。登录后自动分配专属 OpenClaw，并支持一个用户管理多个 Bot。</p>
+      <p class="sub">支持邮箱注册/登录（无域名可用）与 Google 登录（可选）。登录后自动分配专属 OpenClaw，每个用户固定 1 个实例，可在实例内配置多平台 Channel 与多个 Agent。</p>
       <div id="authArea" class="row hidden">
         <div class="row __LOCAL_HIDDEN_CLASS__" style="width:100%">
           <input id="loginEmail" placeholder="邮箱" />
@@ -1730,11 +1714,8 @@ const portalHTML = `<!doctype html>
     </div>
 
     <div id="manageCard" class="card hidden">
-      <h2 style="margin-top:0">我的 Bot</h2>
-      <div class="row">
-        <input id="botName" placeholder="新 Bot 名称（可选）" />
-        <button class="primary" onclick="createBot()">创建 Bot</button>
-      </div>
+      <h2 style="margin-top:0">我的 OpenClaw 实例</h2>
+      <div class="meta">实例配额：每个用户 1 个（固定）。如未分配，请点击上方“自动分配并启动专属 Bot”。</div>
       <div id="bots" class="bots"></div>
     </div>
   </div>

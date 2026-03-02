@@ -58,6 +58,14 @@ func CreateBot(c echo.Context) error {
 		appID = app.ID
 	}
 
+	hasExisting, err := model.HasBotForAppAndUser(appID, req.UserID)
+	if err != nil {
+		return util.InternalError(c, "failed to check user bot quota")
+	}
+	if hasExisting {
+		return util.BadRequest(c, model.ErrUserBotLimitExceeded.Error())
+	}
+
 	bot := &model.Bot{
 		AppID:     appID,
 		UserID:    req.UserID,

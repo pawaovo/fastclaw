@@ -27,6 +27,10 @@ max_running_bots = 2
 # Only used when runtime.mode = "docker_pool"
 # For single-server deployment, point to pre-started OpenClaw gateways.
 endpoints = ["127.0.0.1:18891", "127.0.0.1:18892", "127.0.0.1:18893", "127.0.0.1:18894"]
+# Health guard tuning for docker_pool mode.
+health_check_interval_seconds = 20
+health_fail_threshold = 3
+health_startup_grace_seconds = 120
 
 [storage]
 pvc_name = "fastclaw-shared-data"

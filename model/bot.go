@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ const (
 	BotStatusStopped BotStatus = "stopped"
 	BotStatusError   BotStatus = "error"
 )
+
+var ErrUserBotLimitExceeded = errors.New("each user can only have one bot instance")
 
 type Bot struct {
 	ID          string          `json:"id" gorm:"primaryKey;type:varchar(36)"`
@@ -306,6 +309,21 @@ func ListBotsByAppAndUser(appID, userID string) ([]*Bot, error) {
 		return nil, err
 	}
 	return bots, nil
+}
+
+func HasBotForAppAndUser(appID, userID string) (bool, error) {
+	var count int64
+	query := util.GetDB().Model(&Bot{})
+	if appID != "" {
+		query = query.Where("app_id = ?", appID)
+	}
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func ListBotsByStatus(status BotStatus) ([]*Bot, error) {

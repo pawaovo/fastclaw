@@ -15,6 +15,8 @@ var (
 	dockerPoolGuardOnce sync.Once
 	// unhealthyCounts stores consecutive health-check failure counts by bot ID.
 	unhealthyCounts sync.Map
+	// warmupUntil stores a guard grace window for freshly started/recovered bots.
+	warmupUntil sync.Map
 )
 
 func startDockerPoolGuard() {
@@ -60,6 +62,10 @@ func reconcileDockerPool(ctx context.Context) {
 		}
 
 		ep := strings.TrimSpace(bot.Endpoint)
+		if isInWarmup(bot.ID) {
+			unhealthyCounts.Delete(bot.ID)
+			continue
+		}
 		if ep == "" || !containsEndpoint(configured, ep) || !checkEndpointReady(ep) {
 			failures := incrementUnhealthy(bot.ID)
 			if failures < failThreshold {
@@ -94,7 +100,11 @@ func recoverRunningBot(bot *model.Bot, healthy []string) error {
 		return err
 	}
 
-	return model.UpdateBotStatus(bot.ID, model.BotStatusRunning, endpoint)
+	if err := model.UpdateBotStatus(bot.ID, model.BotStatusRunning, endpoint); err != nil {
+		return err
+	}
+	markDockerPoolBotWarmup(bot.ID)
+	return nil
 }
 
 func healthyEndpoints(configured []string) []string {
@@ -122,4 +132,34 @@ func incrementUnhealthy(botID string) int {
 	current++
 	unhealthyCounts.Store(botID, current)
 	return current
+}
+
+func markDockerPoolBotWarmup(botID string) {
+	grace := time.Duration(viper.GetInt("docker_pool.health_startup_grace_seconds")) * time.Second
+	if grace <= 0 {
+		grace = 120 * time.Second
+	}
+	warmupUntil.Store(botID, time.Now().Add(grace))
+}
+
+func clearDockerPoolBotWarmup(botID string) {
+	warmupUntil.Delete(botID)
+	unhealthyCounts.Delete(botID)
+}
+
+func isInWarmup(botID string) bool {
+	raw, ok := warmupUntil.Load(botID)
+	if !ok {
+		return false
+	}
+	until, ok := raw.(time.Time)
+	if !ok {
+		warmupUntil.Delete(botID)
+		return false
+	}
+	if time.Now().After(until) {
+		warmupUntil.Delete(botID)
+		return false
+	}
+	return true
 }

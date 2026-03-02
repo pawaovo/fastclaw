@@ -63,6 +63,7 @@ func StartBot(ctx context.Context, bot *model.Bot, k8sConfig *k8s.BotConfig) (st
 			_ = model.ReleaseEndpointLease(bot.ID)
 			return "", err
 		}
+		markDockerPoolBotWarmup(bot.ID)
 		return endpoint, nil
 	}
 
@@ -79,6 +80,7 @@ func StartBot(ctx context.Context, bot *model.Bot, k8sConfig *k8s.BotConfig) (st
 
 func StopBot(ctx context.Context, bot *model.Bot) error {
 	if IsDockerPoolMode() {
+		clearDockerPoolBotWarmup(bot.ID)
 		return model.ReleaseEndpointLease(bot.ID)
 	}
 	if err := k8s.DeleteDeployment(ctx, bot.ID); err != nil {
@@ -146,6 +148,7 @@ func ReleaseBot(botID string) error {
 	if !IsDockerPoolMode() {
 		return nil
 	}
+	clearDockerPoolBotWarmup(botID)
 	return model.ReleaseEndpointLease(botID)
 }
 
