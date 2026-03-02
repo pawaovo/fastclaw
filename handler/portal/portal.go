@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -123,6 +124,7 @@ func RegisterRoutes(e *echo.Echo) {
 	api.GET("/bots/:id/channels", getBotChannels)
 	api.PUT("/bots/:id/channels/:channel", upsertBotChannel)
 	api.DELETE("/bots/:id/channels/:channel", deleteBotChannel)
+	api.POST("/bots/:id/channels/:channel/test", testBotChannel)
 	api.POST("/allocate", allocateBot)
 }
 
@@ -810,6 +812,147 @@ func deleteBotChannel(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+func testBotChannel(c echo.Context) error {
+	user, err := mustSessionUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
+	}
+	bot, err := mustOwnBot(c.Param("id"), user)
+	if err != nil {
+		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
+	}
+	channel := strings.TrimSpace(strings.ToLower(c.Param("channel")))
+	if channel == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel is required"})
+	}
+	account := strings.TrimSpace(c.QueryParam("account"))
+	if account == "" {
+		account = "default"
+	}
+
+	config, err := bot.GetOpenClawConfig()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to read bot config"})
+	}
+	if config == nil || config.Channels == nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel config not found"})
+	}
+
+	channels := map[string]interface{}(config.Channels)
+	channelCfg := toMap(channels[channel])
+	if channelCfg == nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"ok": false, "message": "channel config not found"})
+	}
+
+	ok, message, details := runChannelConnectivityTest(channel, channelCfg, account)
+	return c.JSON(http.StatusOK, map[string]any{
+		"ok":      ok,
+		"message": message,
+		"details": details,
+	})
+}
+
+func runChannelConnectivityTest(channel string, cfg map[string]interface{}, account string) (bool, string, map[string]any) {
+	client := &http.Client{Timeout: 12 * time.Second}
+
+	switch channel {
+	case "telegram":
+		botToken := stringFromMap(cfg, "botToken")
+		if botToken == "" {
+			return false, "telegram botToken is empty", nil
+		}
+		url := "https://api.telegram.org/bot" + botToken + "/getMe"
+		resp, err := client.Get(url)
+		if err != nil {
+			return false, "telegram request failed: " + err.Error(), nil
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		var data map[string]interface{}
+		_ = json.Unmarshal(body, &data)
+		ok, _ := data["ok"].(bool)
+		if !ok {
+			return false, "telegram getMe failed", data
+		}
+		return true, "telegram token is valid", data
+
+	case "discord":
+		token := strings.TrimSpace(stringFromMap(cfg, "token"))
+		if token == "" {
+			return false, "discord token is empty", nil
+		}
+		req, _ := http.NewRequest(http.MethodGet, "https://discord.com/api/v10/users/@me", nil)
+		req.Header.Set("Authorization", "Bot "+token)
+		resp, err := client.Do(req)
+		if err != nil {
+			return false, "discord request failed: " + err.Error(), nil
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		var data map[string]interface{}
+		_ = json.Unmarshal(body, &data)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return false, "discord auth failed", map[string]any{"status": resp.StatusCode, "response": data}
+		}
+		return true, "discord token is valid", map[string]any{"status": resp.StatusCode, "response": data}
+
+	case "feishu":
+		var appID, appSecret string
+		accounts := toMap(cfg["accounts"])
+		if len(accounts) > 0 {
+			accountCfg := toMap(accounts[account])
+			if accountCfg == nil {
+				for _, raw := range accounts {
+					accountCfg = toMap(raw)
+					if accountCfg != nil {
+						break
+					}
+				}
+			}
+			if accountCfg != nil {
+				appID = stringFromMap(accountCfg, "appId")
+				appSecret = stringFromMap(accountCfg, "appSecret")
+			}
+		}
+		if appID == "" {
+			appID = stringFromMap(cfg, "appId")
+		}
+		if appSecret == "" {
+			appSecret = stringFromMap(cfg, "appSecret")
+		}
+		if appID == "" || appSecret == "" {
+			return false, "feishu appId/appSecret is empty", nil
+		}
+		payload, _ := json.Marshal(map[string]string{
+			"app_id":     appID,
+			"app_secret": appSecret,
+		})
+		req, _ := http.NewRequest(http.MethodPost, "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return false, "feishu request failed: " + err.Error(), nil
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		var data map[string]interface{}
+		_ = json.Unmarshal(body, &data)
+		code, _ := data["code"].(float64)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 || code != 0 {
+			return false, "feishu credential validation failed", map[string]any{"status": resp.StatusCode, "response": data}
+		}
+		return true, "feishu credential is valid", map[string]any{"status": resp.StatusCode}
+
+	case "whatsapp":
+		return true, "whatsapp channel saved. QR/device pairing is required in OpenClaw runtime.", map[string]any{
+			"hint": "open bot and complete whatsapp device pairing",
+		}
+
+	default:
+		return false, "unsupported channel", nil
+	}
 }
 
 func toMap(v interface{}) map[string]interface{} {
@@ -1501,6 +1644,7 @@ const portalHTML = `<!doctype html>
             '</div>' +
             '<div class="row">' +
               '<button class="primary" onclick="saveChannelConfig(\'' + safeId + '\', \'' + b.id + '\')">Save Channel</button>' +
+              '<button onclick="testChannelConfig(\'' + safeId + '\', \'' + b.id + '\')">Test Channel</button>' +
               '<button onclick="removeChannelConfig(\'' + safeId + '\', \'' + b.id + '\')">Remove Channel</button>' +
               '<button onclick="loadChannelsConfig(\'' + safeId + '\', \'' + b.id + '\')">Reload Channels</button>' +
               '<span id="ch-status-' + safeId + '" class="meta"></span>' +
@@ -1731,6 +1875,19 @@ const portalHTML = `<!doctype html>
       }
       setChannelStatus(safeId, 'Channel removed');
       await loadChannelsConfig(safeId, botId);
+    }
+
+    async function testChannelConfig(safeId, botId) {
+      const provider = getInput('ch-provider-' + safeId) || 'telegram';
+      const account = getInput('ch-account-' + safeId) || 'default';
+      const data = await api('/portal/api/bots/' + botId + '/channels/' + provider + '/test?account=' + encodeURIComponent(account), {
+        method: 'POST'
+      });
+      if (!data.ok) {
+        setChannelStatus(safeId, 'Test failed: ' + (data.message || 'unknown error'));
+        return;
+      }
+      setChannelStatus(safeId, 'Test ok: ' + (data.message || 'success'));
     }
 
     function setChannelStatus(safeId, msg) {
