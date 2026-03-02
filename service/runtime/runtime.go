@@ -170,11 +170,11 @@ func ensureRunningLimit() error {
 	if maxRunning <= 0 {
 		return nil
 	}
-	bots, err := model.ListBotsByStatus(model.BotStatusRunning)
+	activeLeases, err := model.CountActiveEndpointLeases()
 	if err != nil {
 		return err
 	}
-	if len(bots) >= maxRunning {
+	if int(activeLeases) >= maxRunning {
 		return errors.New("max running bots limit reached")
 	}
 	return nil

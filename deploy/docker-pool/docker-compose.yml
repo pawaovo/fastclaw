@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: fastclaw
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: change-me
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pg-data:/var/lib/postgresql/data
 
@@ -24,6 +24,8 @@ services:
       - openclaw-4
     ports:
       - "18080:18080"
+    environment:
+      FASTCLAW_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - ./config.toml:/app/config.toml:ro
       - /var/run/docker.sock:/var/run/docker.sock

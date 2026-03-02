@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/fastclaw-ai/fastclaw/service/k8s"
 	"github.com/fastclaw-ai/fastclaw/service/runtime"
+	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/labstack/echo/v4"
 	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
@@ -112,6 +114,7 @@ type portalChannelPairingApproveRequest struct {
 type portalPoolStatusResponse struct {
 	Mode       string `json:"mode"`
 	Total      int    `json:"total"`
+	Capacity   int    `json:"capacity"`
 	Active     int    `json:"active"`
 	Free       int    `json:"free"`
 	Full       bool   `json:"full"`
@@ -122,7 +125,18 @@ var (
 	portalAppOnce sync.Once
 	portalAppID   string
 	portalAppErr  error
+
+	portalMustSessionUser      = mustSessionUser
+	portalEnsureUserBotRunning = ensureUserBotRunning
+	portalMustOwnBot           = mustOwnBot
+	portalDeleteBotRecord      = model.DeleteBot
+
+	portalRuntimeStartBot = runtime.StartBot
+	portalRuntimeStopBot  = runtime.StopBot
+	portalRuntimeRelease  = runtime.ReleaseBot
 )
+
+const poolExhaustedMessage = "资源池已满，请稍后重试（当前无可用 OpenClaw 实例）"
 
 func RegisterRoutes(e *echo.Echo) {
 	e.GET("/portal", portalPage)
@@ -148,7 +162,6 @@ func RegisterRoutes(e *echo.Echo) {
 	api.DELETE("/bots/:id/channels/:channel", deleteBotChannel)
 	api.POST("/bots/:id/channels/:channel/test", testBotChannel)
 	api.POST("/bots/:id/channels/:channel/pairing/approve", approveBotChannelPairing)
-	api.POST("/allocate", allocateBot)
 }
 
 func portalCanonicalBaseURL() string {
@@ -245,7 +258,11 @@ func googleCallback(c echo.Context) error {
 	}
 
 	// Login success -> allocate a dedicated bot so user can directly use it.
-	_, _ = ensureUserBotRunning(user)
+	warn := ""
+	if _, err := ensureUserBotRunning(user); err != nil {
+		warn = humanizeAllocationError(err)
+		log.Printf("portal google login: ensure bot failed for user=%s email=%s: %v", user.ID, user.Email, err)
+	}
 
 	c.SetCookie(&http.Cookie{
 		Name:     stateCookieName,
@@ -255,7 +272,11 @@ func googleCallback(c echo.Context) error {
 		MaxAge:   -1,
 		SameSite: http.SameSiteLaxMode,
 	})
-	return c.Redirect(http.StatusFound, "/portal")
+	target := "/portal"
+	if warn != "" {
+		target += "?warn=" + url.QueryEscape(warn)
+	}
+	return c.Redirect(http.StatusFound, target)
 }
 
 type localAuthRequest struct {
@@ -282,8 +303,12 @@ func localRegister(c echo.Context) error {
 	if err := setSessionCookie(c, user); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to create session"})
 	}
-	_, _ = ensureUserBotRunning(user)
-	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+	resp := map[string]any{"ok": true}
+	if _, err := ensureUserBotRunning(user); err != nil {
+		resp["warning"] = humanizeAllocationError(err)
+		log.Printf("portal register: ensure bot failed for user=%s email=%s: %v", user.ID, user.Email, err)
+	}
+	return c.JSON(http.StatusOK, resp)
 }
 
 func localLogin(c echo.Context) error {
@@ -304,8 +329,12 @@ func localLogin(c echo.Context) error {
 	if err := setSessionCookie(c, user); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to create session"})
 	}
-	_, _ = ensureUserBotRunning(user)
-	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+	resp := map[string]any{"ok": true}
+	if _, err := ensureUserBotRunning(user); err != nil {
+		resp["warning"] = humanizeAllocationError(err)
+		log.Printf("portal login: ensure bot failed for user=%s email=%s: %v", user.ID, user.Email, err)
+	}
+	return c.JSON(http.StatusOK, resp)
 }
 
 func logout(c echo.Context) error {
@@ -363,36 +392,21 @@ func getPoolStatus(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"ok": true, "pool": buildPoolStatus()})
 }
 
-func allocateBot(c echo.Context) error {
-	user, err := mustSessionUser(c)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
-	}
-	bot, err := ensureUserBotRunning(user)
-	if err != nil {
-		if isPoolExhaustedError(err) {
-			return c.JSON(http.StatusConflict, map[string]any{"ok": false, "message": "资源池已满，请稍后重试（当前无可用 OpenClaw 实例）", "pool": buildPoolStatus()})
-		}
-		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": err.Error()})
-	}
-	return c.JSON(http.StatusOK, map[string]any{"ok": true, "bot": toPortalBot(bot)})
-}
-
 type createBotRequest struct {
 	Name string `json:"name"`
 }
 
 func createBot(c echo.Context) error {
-	user, err := mustSessionUser(c)
+	user, err := portalMustSessionUser(c)
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
 	}
 
 	// Portal policy: one OpenClaw instance per user.
-	bot, err := ensureUserBotRunning(user)
+	bot, err := portalEnsureUserBotRunning(user)
 	if err != nil {
 		if isPoolExhaustedError(err) {
-			return c.JSON(http.StatusConflict, map[string]any{"ok": false, "message": "资源池已满，请稍后重试（当前无可用 OpenClaw 实例）", "pool": buildPoolStatus()})
+			return poolExhaustedResponse(c)
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to ensure dedicated bot: " + err.Error()})
 	}
@@ -400,24 +414,24 @@ func createBot(c echo.Context) error {
 }
 
 func startBot(c echo.Context) error {
-	user, err := mustSessionUser(c)
+	user, err := portalMustSessionUser(c)
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
 	}
-	bot, err := mustOwnBot(c.Param("id"), user)
+	bot, err := portalMustOwnBot(c.Param("id"), user)
 	if err != nil {
 		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
 	}
 	if bot.Status != model.BotStatusRunning {
-		endpoint, err := runtime.StartBot(context.Background(), bot, nil)
+		endpoint, err := portalRuntimeStartBot(context.Background(), bot, nil)
 		if err != nil {
 			if isPoolExhaustedError(err) {
-				return c.JSON(http.StatusConflict, map[string]any{"ok": false, "message": "资源池已满，请稍后重试（当前无可用 OpenClaw 实例）", "pool": buildPoolStatus()})
+				return poolExhaustedResponse(c)
 			}
 			return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to start bot: " + err.Error()})
 		}
 		if err := model.UpdateBotStatus(bot.ID, model.BotStatusRunning, endpoint); err != nil {
-			_ = runtime.ReleaseBot(bot.ID)
+			_ = portalRuntimeRelease(bot.ID)
 			return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to update bot status"})
 		}
 		bot.Status = model.BotStatusRunning
@@ -435,6 +449,21 @@ func isPoolExhaustedError(err error) bool {
 		strings.Contains(msg, "max running bots limit reached")
 }
 
+func humanizeAllocationError(err error) string {
+	if isPoolExhaustedError(err) {
+		return poolExhaustedMessage
+	}
+	return "实例分配失败，请点击“新增专属实例”重试"
+}
+
+func poolExhaustedResponse(c echo.Context) error {
+	return c.JSON(http.StatusConflict, map[string]any{
+		"ok":      false,
+		"message": poolExhaustedMessage,
+		"pool":    buildPoolStatus(),
+	})
+}
+
 func buildPoolStatus() *portalPoolStatusResponse {
 	mode := strings.TrimSpace(viper.GetString("runtime.mode"))
 	maxRunning := viper.GetInt("runtime.max_running_bots")
@@ -449,10 +478,16 @@ func buildPoolStatus() *portalPoolStatusResponse {
 		}
 	}
 	active := 0
-	if c, err := model.CountActiveEndpointLeases(); err == nil {
-		active = int(c)
+	if util.GetDB() != nil {
+		if c, err := model.CountActiveEndpointLeases(); err == nil {
+			active = int(c)
+		}
 	}
-	free := total - active
+	capacity := total
+	if maxRunning > 0 && (capacity == 0 || maxRunning < capacity) {
+		capacity = maxRunning
+	}
+	free := capacity - active
 	if free < 0 {
 		free = 0
 	}
@@ -460,25 +495,26 @@ func buildPoolStatus() *portalPoolStatusResponse {
 	return &portalPoolStatusResponse{
 		Mode:       mode,
 		Total:      total,
+		Capacity:   capacity,
 		Active:     active,
 		Free:       free,
-		Full:       total > 0 && active >= total,
+		Full:       capacity > 0 && active >= capacity,
 		MaxRunning: maxRunning,
 	}
 }
 
 func stopBot(c echo.Context) error {
-	user, err := mustSessionUser(c)
+	user, err := portalMustSessionUser(c)
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
 	}
-	bot, err := mustOwnBot(c.Param("id"), user)
+	bot, err := portalMustOwnBot(c.Param("id"), user)
 	if err != nil {
 		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
 	}
 
 	if bot.Status == model.BotStatusRunning {
-		if err := runtime.StopBot(context.Background(), bot); err != nil {
+		if err := portalRuntimeStopBot(context.Background(), bot); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to stop bot"})
 		}
 		if err := model.UpdateBotStatus(bot.ID, model.BotStatusStopped, ""); err != nil {
@@ -491,22 +527,22 @@ func stopBot(c echo.Context) error {
 }
 
 func deleteBot(c echo.Context) error {
-	user, err := mustSessionUser(c)
+	user, err := portalMustSessionUser(c)
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]any{"ok": false, "message": "unauthorized"})
 	}
-	bot, err := mustOwnBot(c.Param("id"), user)
+	bot, err := portalMustOwnBot(c.Param("id"), user)
 	if err != nil {
 		return c.JSON(http.StatusForbidden, map[string]any{"ok": false, "message": err.Error()})
 	}
 
 	if bot.Status == model.BotStatusRunning {
-		if err := runtime.StopBot(context.Background(), bot); err != nil {
+		if err := portalRuntimeStopBot(context.Background(), bot); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to stop bot"})
 		}
 	}
-	_ = runtime.ReleaseBot(bot.ID)
-	if err := model.DeleteBot(bot.ID); err != nil {
+	_ = portalRuntimeRelease(bot.ID)
+	if err := portalDeleteBotRecord(bot.ID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"ok": false, "message": "failed to delete bot"})
 	}
 
@@ -1357,16 +1393,19 @@ func ensureUserBotRunning(user *model.PortalUser) (*model.Bot, error) {
 			return nil, err
 		}
 	} else {
+		if len(bots) > 1 {
+			log.Printf("portal: detected %d bots for user=%s app=%s; using most recent bot=%s", len(bots), user.ID, appID, bots[0].ID)
+		}
 		bot = bots[0]
 	}
 
 	if bot.Status != model.BotStatusRunning {
-		endpoint, err := runtime.StartBot(context.Background(), bot, nil)
+		endpoint, err := portalRuntimeStartBot(context.Background(), bot, nil)
 		if err != nil {
 			return nil, err
 		}
 		if err := model.UpdateBotStatus(bot.ID, model.BotStatusRunning, endpoint); err != nil {
-			_ = runtime.ReleaseBot(bot.ID)
+			_ = portalRuntimeRelease(bot.ID)
 			return nil, err
 		}
 		bot.Status = model.BotStatusRunning
@@ -1839,6 +1878,9 @@ const portalHTML = `<!doctype html>
     let currentUser = null;
     let currentBots = [];
     let currentPool = null;
+    let poolRetryTimer = null;
+    let poolRetryDeadlineMs = 0;
+    const poolRetryIntervalMs = 15000;
 
     async function api(url, options = {}) {
       const res = await fetch(url, {
@@ -1854,6 +1896,67 @@ const portalHTML = `<!doctype html>
       if (!el) return;
       el.textContent = msg || '';
       el.style.color = isError ? '#dc2626' : '#6b7280';
+    }
+
+    function getWarnFromURL() {
+      const params = new URLSearchParams(window.location.search || '');
+      return (params.get('warn') || '').trim();
+    }
+
+    function clearWarnFromURL() {
+      if (!window.history || !window.history.replaceState) return;
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('warn')) {
+        url.searchParams.delete('warn');
+        window.history.replaceState({}, '', url.toString());
+      }
+    }
+
+    function stopPoolRetryPolling() {
+      if (poolRetryTimer) {
+        clearInterval(poolRetryTimer);
+        poolRetryTimer = null;
+      }
+      poolRetryDeadlineMs = 0;
+    }
+
+    function startPoolRetryPolling() {
+      if (poolRetryTimer) return;
+      poolRetryDeadlineMs = Date.now() + poolRetryIntervalMs;
+      poolRetryTimer = setInterval(async () => {
+        const hasBot = Array.isArray(currentBots) && currentBots.length > 0;
+        const poolFull = !!(currentPool && currentPool.full);
+        if (!currentUser || hasBot || !poolFull) {
+          stopPoolRetryPolling();
+          return;
+        }
+        if (Date.now() >= poolRetryDeadlineMs) {
+          poolRetryDeadlineMs = Date.now() + poolRetryIntervalMs;
+          await refresh();
+        } else {
+          renderPoolHint();
+        }
+      }, 1000);
+    }
+
+    function renderPoolHint() {
+      const userHint = document.getElementById('userHint');
+      if (!userHint) return;
+      const hasBot = Array.isArray(currentBots) && currentBots.length > 0;
+      const poolFull = !!(currentPool && currentPool.full);
+      if (hasBot) {
+        userHint.textContent = '每个用户仅允许 1 个专属实例；如需新建，请先删除当前实例。';
+        userHint.style.color = '#444';
+        return;
+      }
+      if (poolFull) {
+        const remainMs = Math.max(0, poolRetryDeadlineMs - Date.now());
+        const remainSec = Math.max(1, Math.ceil(remainMs / 1000));
+        userHint.textContent = '当前资源池已满，系统将自动重试分配（' + remainSec + ' 秒后）。';
+        userHint.style.color = '#8f1d1d';
+        return;
+      }
+      userHint.textContent = '';
     }
 
     function render() {
@@ -1879,7 +1982,7 @@ const portalHTML = `<!doctype html>
       userInfo.innerHTML = '<strong>' + (currentUser.name || 'User') + '</strong><span style="color:#6b7280">' + currentUser.email + '</span>';
 
       if (currentPool && currentPool.mode === 'docker_pool' && currentPool.total > 0) {
-        poolInfo.textContent = '资源池：' + currentPool.active + '/' + currentPool.total + ' 已占用，剩余 ' + currentPool.free + '；max_running_bots=' + currentPool.maxRunning;
+        poolInfo.textContent = '资源池：已占用 ' + currentPool.active + '/' + currentPool.capacity + '（容器总数 ' + currentPool.total + '），剩余 ' + currentPool.free + '；max_running_bots=' + currentPool.maxRunning;
       } else {
         poolInfo.textContent = '';
       }
@@ -1888,15 +1991,12 @@ const portalHTML = `<!doctype html>
       if (createBotBtn) {
         createBotBtn.disabled = hasBot || (poolFull && !hasBot);
       }
-      if (hasBot) {
-        userHint.textContent = '每个用户仅允许 1 个专属实例；如需新建，请先删除当前实例。';
-        userHint.style.color = '#444';
-      } else if (poolFull) {
-        userHint.textContent = '当前资源池已满，暂时无法为新用户分配实例，请稍后重试。';
-        userHint.style.color = '#8f1d1d';
+      if (poolFull && !hasBot) {
+        startPoolRetryPolling();
       } else {
-        userHint.textContent = '';
+        stopPoolRetryPolling();
       }
+      renderPoolHint();
 
       botsEl.innerHTML = '';
       for (const b of currentBots) {
@@ -2030,7 +2130,7 @@ const portalHTML = `<!doctype html>
         setAuthMessage(data.message || '登录失败', true);
         return;
       }
-      setAuthMessage('登录成功');
+      setAuthMessage(data.warning ? ('登录成功，但实例自动分配失败：' + data.warning) : '登录成功');
       await refresh();
     }
 
@@ -2047,7 +2147,7 @@ const portalHTML = `<!doctype html>
         setAuthMessage(data.message || '注册失败', true);
         return;
       }
-      setAuthMessage('注册成功');
+      setAuthMessage(data.warning ? ('注册成功，但实例自动分配失败：' + data.warning) : '注册成功');
       await refresh();
     }
 
@@ -2342,6 +2442,12 @@ const portalHTML = `<!doctype html>
     async function logout() {
       await api('/portal/auth/logout', { method: 'POST' });
       await refresh();
+    }
+
+    const warnMsg = getWarnFromURL();
+    if (warnMsg) {
+      setAuthMessage(warnMsg, true);
+      clearWarnFromURL();
     }
 
     refresh();

@@ -2,13 +2,17 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fastclaw-ai/fastclaw/model"
 	"github.com/spf13/viper"
+	"gorm.io/gorm"
 )
 
 var (
@@ -26,6 +30,7 @@ func startDockerPoolGuard() {
 	}
 
 	dockerPoolGuardOnce.Do(func() {
+		reconcileDockerPool(context.Background())
 		go func() {
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
@@ -38,6 +43,8 @@ func startDockerPoolGuard() {
 }
 
 func reconcileDockerPool(ctx context.Context) {
+	reapZombieLeases()
+
 	bots, err := model.ListBotsByStatus(model.BotStatusRunning)
 	if err != nil {
 		log.Printf("docker_pool guard: list running bots failed: %v", err)
@@ -83,6 +90,20 @@ func reconcileDockerPool(ctx context.Context) {
 }
 
 func recoverRunningBot(bot *model.Bot, healthy []string) error {
+	currentEndpoint := strings.TrimSpace(bot.Endpoint)
+	configured := getPoolEndpoints()
+	if currentEndpoint != "" && containsEndpoint(configured, currentEndpoint) {
+		_ = restartPoolContainerForEndpoint(currentEndpoint, configured)
+		time.Sleep(2 * time.Second)
+		if checkEndpointReady(currentEndpoint) {
+			if err := model.UpdateBotStatus(bot.ID, model.BotStatusRunning, currentEndpoint); err != nil {
+				return err
+			}
+			markDockerPoolBotWarmup(bot.ID)
+			return nil
+		}
+	}
+
 	// Always release the current lease first so this bot can be re-assigned.
 	_ = model.ReleaseEndpointLease(bot.ID)
 
@@ -104,6 +125,54 @@ func recoverRunningBot(bot *model.Bot, healthy []string) error {
 		return err
 	}
 	markDockerPoolBotWarmup(bot.ID)
+	return nil
+}
+
+func reapZombieLeases() {
+	leases, err := model.ListActiveEndpointLeases()
+	if err != nil {
+		log.Printf("docker_pool guard: list active leases failed: %v", err)
+		return
+	}
+
+	for _, lease := range leases {
+		bot, err := model.GetBotByID(lease.BotID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			_ = model.ReleaseEndpointLease(lease.BotID)
+			clearDockerPoolBotWarmup(lease.BotID)
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		if bot.Status != model.BotStatusRunning {
+			_ = model.ReleaseEndpointLease(lease.BotID)
+			clearDockerPoolBotWarmup(lease.BotID)
+			continue
+		}
+		if strings.TrimSpace(bot.Endpoint) == "" {
+			_ = model.UpdateBotStatus(bot.ID, model.BotStatusRunning, lease.Endpoint)
+		}
+	}
+}
+
+func restartPoolContainerForEndpoint(endpoint string, endpoints []string) error {
+	name, err := resolvePoolContainerName(endpoint, endpoints)
+	if err != nil {
+		return err
+	}
+
+	timeout := time.Duration(viper.GetInt("docker_pool.container_restart_timeout_seconds")) * time.Second
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	output, err := exec.CommandContext(ctx, "docker", "restart", name).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("restart container %s failed: %w; output: %s", name, err, strings.TrimSpace(string(output)))
+	}
 	return nil
 }
 

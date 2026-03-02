@@ -7,6 +7,7 @@ This deployment is for a single 4C8G server using `runtime.mode = "docker_pool"`
 ```bash
 cd deploy/docker-pool
 cp config.toml.example config.toml
+cp .env.example .env
 ```
 
 Edit `config.toml`:
@@ -17,6 +18,9 @@ Edit `config.toml`:
 - `portal.google_client_id`
 - `portal.google_client_secret`
 - `portal.google_redirect_url` (must match Google Console exactly)
+
+Edit `.env`:
+- `POSTGRES_PASSWORD` (must be a strong random password, do not use `change-me`)
 
 ## 2) Start services
 
@@ -111,4 +115,13 @@ Use the helper script below to temporarily stop pool containers, rebuild `fastcl
 cd deploy/docker-pool
 chmod +x rebuild-fastclaw-safe.sh
 ./rebuild-fastclaw-safe.sh
+```
+
+### Disk cleanup (recommended before/after upgrades)
+
+```bash
+docker system df
+docker image prune -f
+docker builder prune -f --filter until=240h
+docker container prune -f
 ```

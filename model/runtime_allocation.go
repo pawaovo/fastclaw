@@ -107,3 +107,11 @@ func CountActiveEndpointLeases() (int64, error) {
 		Count(&count).Error
 	return count, err
 }
+
+func ListActiveEndpointLeases() ([]RuntimeAllocation, error) {
+	var rows []RuntimeAllocation
+	err := util.GetDB().
+		Where("released_at IS NULL").
+		Find(&rows).Error
+	return rows, err
+}

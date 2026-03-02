@@ -65,3 +65,9 @@ func InitDB() error {
 func GetDB() *gorm.DB {
 	return db
 }
+
+// SetDBForTest injects an in-memory/test database connection.
+// It is intended for unit tests that should not depend on external Postgres.
+func SetDBForTest(testDB *gorm.DB) {
+	db = testDB
+}
