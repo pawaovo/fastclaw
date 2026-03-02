@@ -230,16 +230,14 @@ func buildDockerPoolGatewayPatchScript() (string, error) {
 		bind = "lan"
 	}
 
-	// If a shared gateway token is configured, use token mode; otherwise use none.
-	gatewayToken := strings.TrimSpace(viper.GetString("docker_pool.gateway_token"))
-	authMode := "none"
-	if gatewayToken != "" {
-		authMode = "token"
-	}
+	// OpenClaw v2026.3+ refuses lan bind without auth, so docker_pool defaults to token mode.
+	gatewayToken := DockerPoolGatewayToken()
+	authMode := "token"
 	if mode := strings.TrimSpace(strings.ToLower(viper.GetString("docker_pool.gateway_auth_mode"))); mode == "none" || mode == "token" {
 		authMode = mode
 		if authMode == "token" && gatewayToken == "" {
-			authMode = "none"
+			authMode = "token"
+			gatewayToken = DockerPoolGatewayToken()
 		}
 	}
 
@@ -258,6 +256,13 @@ func buildDockerPoolGatewayPatchScript() (string, error) {
 	)
 
 	return "node -e " + strconv.Quote(nodeScript), nil
+}
+
+func DockerPoolGatewayToken() string {
+	if token := strings.TrimSpace(viper.GetString("docker_pool.gateway_token")); token != "" {
+		return token
+	}
+	return "fastclaw-docker-pool-token"
 }
 
 func getDockerPoolAllowedOrigins() []string {

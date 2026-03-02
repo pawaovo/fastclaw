@@ -21,7 +21,6 @@ import (
 	"github.com/fastclaw-ai/fastclaw/util"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
-	"github.com/spf13/viper"
 	"gorm.io/gorm"
 )
 
@@ -200,11 +199,8 @@ func ProxyToBot(c echo.Context) error {
 	requestToken := c.QueryParam("token")
 	injectedGatewayToken := requestToken
 	if runtime.IsDockerPoolMode() {
-		// docker_pool OpenClaw instances may have gateway auth token enabled.
-		// Use configured pool gateway token instead of bot access token.
-		if t := strings.TrimSpace(viper.GetString("docker_pool.gateway_token")); t != "" {
-			injectedGatewayToken = t
-		}
+		// docker_pool always uses a shared gateway token for pooled instances.
+		injectedGatewayToken = runtime.DockerPoolGatewayToken()
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
